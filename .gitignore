@@ -1,9 +1,11 @@
 # Environment variables
 .env
 
-# Database
+# Database (general)
 *.db
 data/*.db
+# Allow the webapp database to be included for Streamlit Cloud
+!webapp/data/avangrid.db
 
 # Python
 __pycache__/

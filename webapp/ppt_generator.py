@@ -265,6 +265,28 @@ def extract_app_data_from_db(app_id, app_name, session=None):
 # Slide filling logic
 # ============================================================
 
+def extract_primary_name(text):
+    """Extract the first/primary person name from a multi-person string.
+    Handles newlines, commas, and parenthetical details."""
+    if not text:
+        return ""
+    # Split by newlines first, take first non-empty line
+    lines = [l.strip() for l in text.split('\n') if l.strip()]
+    if not lines:
+        return ""
+    first_line = lines[0]
+    # If it has commas, take just the first name
+    if ',' in first_line:
+        parts = [p.strip() for p in first_line.split(',') if p.strip()]
+        if parts:
+            first_line = parts[0]
+    # Remove employee IDs like "U495810"
+    first_line = re.sub(r'\s*-?\s*U\d{5,}', '', first_line).strip()
+    # Remove parenthetical details
+    first_line = re.sub(r'\s*\([^)]*\)', '', first_line).strip()
+    return first_line
+
+
 def auto_fit_text(text_frame, content, default_size=8, min_size=6, max_chars_per_size=None):
     """Set text with auto-fitting font size based on content length."""
     if max_chars_per_size is None:
@@ -320,6 +342,13 @@ def fill_slide(slide, data_map):
         except Exception:
             pass
 
+    # Size profiles for different placeholder types
+    # Tiny shapes (0.15" height): font 5pt, max ~20 chars, extract primary name
+    TINY_FIELDS = {"BUSINESS_OWNER", "IT_OWNER"}
+    # Small one-line shapes (0.33" height): font 6-7pt, max ~50 chars
+    SMALL_FIELDS = {"USAGE", "BUSINESS_CRITICALITY", "OWNED_BY", "UTILITY_DOMAIN",
+                    "BUSINESS_AREA", "OPCOS"}
+
     # Step 1: Replace {{FIELD_NAME}} placeholders
     for shape in slide.shapes:
         try:
@@ -334,6 +363,20 @@ def fill_slide(slide, data_map):
                         set_text(shape.text_frame, val, font_size=12, bold=True)
                     else:
                         shape.text_frame.clear()
+                elif placeholder in TINY_FIELDS:
+                    val = data_map.get(placeholder, "")
+                    # Extract primary name for tiny owner shapes
+                    val = extract_primary_name(val) if val else ""
+                    if len(val) > 25:
+                        val = val[:22] + "..."
+                    set_text(shape.text_frame, val, font_size=5)
+                elif placeholder in SMALL_FIELDS:
+                    val = data_map.get(placeholder, "")
+                    # Clean newlines for single-line shapes
+                    val = val.replace('\n', ', ') if val else ""
+                    if len(val) > 60:
+                        val = val[:57] + "..."
+                    set_text(shape.text_frame, val, font_size=6)
                 elif placeholder in data_map:
                     val = data_map.get(placeholder, "")
                     auto_fit_text(shape.text_frame, val)
@@ -357,7 +400,15 @@ def fill_slide(slide, data_map):
             for placeholder_text, data_key in placeholder_texts.items():
                 if placeholder_text in text and data_key and data_key in data_map:
                     val = data_map.get(data_key, "")
-                    auto_fit_text(shape.text_frame, val)
+                    # These text-based shapes are small (0.25-0.69" height)
+                    shape_h = shape.height / 914400  # EMU to inches
+                    if shape_h < 0.3:
+                        val = val.replace('\n', ', ') if val else ""
+                        if len(val) > 40:
+                            val = val[:37] + "..."
+                        set_text(shape.text_frame, val, font_size=6)
+                    else:
+                        auto_fit_text(shape.text_frame, val)
                     break
         except Exception:
             pass
@@ -375,6 +426,9 @@ def fill_slide(slide, data_map):
         "Rectangle 178": "PLANNED_UPGRADES",
         "Rectangle 182": "MONITORED",
     }
+    # Small direct-mapped shapes that need smaller fonts (height < 0.3")
+    SMALL_DIRECT = {"Rectangle 142", "Rectangle 189", "Rectangle 174",
+                    "Rectangle 178", "Rectangle 182"}
     for shape in slide.shapes:
         try:
             if shape.name in direct_mappings:
@@ -383,6 +437,11 @@ def fill_slide(slide, data_map):
                     val = data_map.get(data_key, "")
                     if data_key == "SATISFACTION":
                         set_text(shape.text_frame, val, font_size=16)
+                    elif shape.name in SMALL_DIRECT:
+                        val = val.replace('\n', ', ') if val else ""
+                        if len(val) > 40:
+                            val = val[:37] + "..."
+                        set_text(shape.text_frame, val, font_size=6)
                     else:
                         auto_fit_text(shape.text_frame, val)
         except Exception:

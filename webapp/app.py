@@ -593,17 +593,75 @@ if 'chat_history' not in st.session_state:
 
 # ==================== HELPER FUNCTIONS ====================
 
+def _parse_meetings_sheet(wb):
+    """Parse the Meetings sheet to extract Business Owner and IT Owner per application.
+    Returns dict: {normalized_app_name: {'business_owner': str, 'it_owner': str, 'raw_name': str}}
+    """
+    meetings_data = {}
+    if 'Meetings' not in wb.sheetnames:
+        return meetings_data
+
+    ws = wb['Meetings']
+    # Find header row and column indices
+    header_row = None
+    col_app_name = None
+    col_business_owner = None
+    col_it_owner = None
+
+    for row in ws.iter_rows(max_row=5):
+        for idx, cell in enumerate(row):
+            val = str(cell.value).lower().strip() if cell.value else ""
+            if 'application name' in val or val == 'application':
+                col_app_name = idx
+                header_row = cell.row
+            elif 'business owner' in val:
+                col_business_owner = idx
+            elif 'it owner' in val:
+                col_it_owner = idx
+
+    if col_app_name is None or header_row is None:
+        return meetings_data
+
+    for row in ws.iter_rows(min_row=header_row + 1, max_row=ws.max_row):
+        app_name_cell = row[col_app_name].value if col_app_name < len(row) else None
+        if not app_name_cell:
+            continue
+        app_name = str(app_name_cell).strip()
+        if not app_name:
+            continue
+
+        bo = ""
+        it_o = ""
+        if col_business_owner is not None and col_business_owner < len(row):
+            bo = str(row[col_business_owner].value or "").strip()
+        if col_it_owner is not None and col_it_owner < len(row):
+            it_o = str(row[col_it_owner].value or "").strip()
+
+        normalized = normalize_app_name(app_name)
+        meetings_data[normalized] = {
+            'business_owner': bo,
+            'it_owner': it_o,
+            'raw_name': app_name
+        }
+
+    return meetings_data
+
+
 def parse_questionnaire_excel(uploaded_file):
     """Parse uploaded questionnaire Excel file (from existing code)"""
     try:
         wb = openpyxl.load_workbook(uploaded_file, data_only=True)
         applications = []
 
+        # Parse Meetings sheet for Business Owner / IT Owner data
+        meetings_data = _parse_meetings_sheet(wb)
+
         for sheet_name in wb.sheetnames:
             # Skip template/metadata sheets
             if sheet_name.lower() in ['index', 'introduction', 'methodology', 'user guide',
                                        'calculator', 'dashboard', 'strategic roadmap',
-                                       'application groups', 'value chain', 'sheet1']:
+                                       'application groups', 'value chain', 'sheet1',
+                                       'meetings', 'opcos', 'to delete', 'questions template']:
                 continue
 
             ws = wb[sheet_name]
@@ -669,6 +727,37 @@ def parse_questionnaire_excel(uploaded_file):
                             'a': answer_text,
                             's': score if score else None,
                             'block': synergy_block
+                        }
+
+            # Inject Business Owner / IT Owner from Meetings sheet
+            if meetings_data:
+                norm_sheet = normalize_app_name(sheet_name)
+                # Try exact normalized match first, then fuzzy
+                owner_info = meetings_data.get(norm_sheet)
+                if not owner_info:
+                    # Fuzzy match against Meetings app names
+                    best_ratio = 0
+                    best_key = None
+                    for mk in meetings_data:
+                        ratio = difflib.SequenceMatcher(None, norm_sheet, mk).ratio()
+                        if ratio > best_ratio:
+                            best_ratio = ratio
+                            best_key = mk
+                    if best_ratio > 0.75 and best_key:
+                        owner_info = meetings_data[best_key]
+
+                if owner_info:
+                    if owner_info['business_owner']:
+                        app_data['answers']["Who is the Business Owner of this application?"] = {
+                            'a': owner_info['business_owner'],
+                            's': None,
+                            'block': 'Strategic Fit'
+                        }
+                    if owner_info['it_owner']:
+                        app_data['answers']["Who is the IT Owner of this application?"] = {
+                            'a': owner_info['it_owner'],
+                            's': None,
+                            'block': 'Strategic Fit'
                         }
 
             if app_data['answers']:

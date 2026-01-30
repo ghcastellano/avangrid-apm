@@ -15,6 +15,7 @@ import os
 import sys
 import json
 from datetime import datetime
+from typing import Dict
 import difflib
 
 # Ensure webapp directory is in Python path (needed for Streamlit Cloud)

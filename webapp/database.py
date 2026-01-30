@@ -8,6 +8,7 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 from datetime import datetime, timezone
 import os
+import shutil
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -21,6 +22,33 @@ if _env_db_path and os.path.isabs(_env_db_path):
     DATABASE_PATH = _env_db_path
 else:
     DATABASE_PATH = _DEFAULT_DB_PATH
+
+
+def _ensure_writable_db():
+    """On Streamlit Cloud the git-cloned repo is read-only.
+    If the database file is not writable, copy it to /tmp and use that copy."""
+    global DATABASE_PATH
+
+    if not os.path.exists(DATABASE_PATH):
+        return  # Nothing to copy; init_db will create a new one
+
+    # Quick writability check: try opening for append
+    try:
+        with open(DATABASE_PATH, 'a'):
+            pass
+        return  # File is writable, nothing to do
+    except OSError:
+        pass
+
+    # Database is read-only - copy to writable location
+    writable_path = os.path.join("/tmp", "avangrid_apm.db")
+    if not os.path.exists(writable_path) or \
+       os.path.getsize(writable_path) != os.path.getsize(DATABASE_PATH):
+        shutil.copy2(DATABASE_PATH, writable_path)
+    DATABASE_PATH = writable_path
+
+
+_ensure_writable_db()
 Base = declarative_base()
 
 class Application(Base):

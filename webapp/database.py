@@ -12,9 +12,15 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Database setup - use path relative to this file for portability
+# Database setup - always use path relative to this file for portability
+# Ignore DATABASE_PATH env var if it's a relative path (breaks on Streamlit Cloud
+# where CWD is repo root, not webapp/)
 _DEFAULT_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "avangrid.db")
-DATABASE_PATH = os.getenv("DATABASE_PATH", _DEFAULT_DB_PATH)
+_env_db_path = os.getenv("DATABASE_PATH")
+if _env_db_path and os.path.isabs(_env_db_path):
+    DATABASE_PATH = _env_db_path
+else:
+    DATABASE_PATH = _DEFAULT_DB_PATH
 Base = declarative_base()
 
 class Application(Base):

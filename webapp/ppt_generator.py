@@ -397,7 +397,6 @@ def _copy_rels_with_rids(source_slide, new_slide, rids_needed):
     """Copy relationships from source to new slide, preserving exact rIds.
     This is critical: shape XML references rIds like rId5, rId6 etc.
     If the new slide has different rIds, images/embeds won't load."""
-    import re as _re
 
     for rId, rel in source_slide.part.rels.items():
         if rId not in rids_needed:
@@ -416,6 +415,30 @@ def _copy_rels_with_rids(source_slide, new_slide, rids_needed):
             new_slide.part.rels._rels[rId] = rel
         except Exception:
             pass
+
+
+def _fix_duplicate_shape_ids(spTree):
+    """Fix duplicate cNvPr id attributes within a slide's spTree.
+    PowerPoint requires unique shape IDs per slide; duplicates cause repair errors."""
+    seen_ids = set()
+    max_id = 0
+
+    # First pass: find all IDs and the max
+    for elem in spTree.iter():
+        if elem.tag.endswith('}cNvPr'):
+            sid = int(elem.get('id', 0))
+            max_id = max(max_id, sid)
+
+    # Second pass: fix duplicates
+    next_id = max_id + 1
+    for elem in spTree.iter():
+        if elem.tag.endswith('}cNvPr'):
+            sid = int(elem.get('id', 0))
+            if sid in seen_ids:
+                elem.set('id', str(next_id))
+                next_id += 1
+            else:
+                seen_ids.add(sid)
 
 
 # ============================================================
@@ -462,6 +485,9 @@ def generate_portfolio_pptx():
         shapes_xml = etree.tostring(template_slide.shapes._spTree, encoding='unicode')
         referenced_rids = set(_re.findall(r'r:(?:embed|link|id)="(rId\d+)"', shapes_xml))
 
+        # Fix duplicate shape IDs in template slide (template has dupes)
+        _fix_duplicate_shape_ids(template_slide.shapes._spTree)
+
         # Fill first slide with first application
         try:
             fill_slide(template_slide, apps_data[0])
@@ -484,6 +510,9 @@ def generate_portfolio_pptx():
 
                 # Copy ALL referenced relationships preserving exact rIds
                 _copy_rels_with_rids(template_slide, new_slide, referenced_rids)
+
+                # Fix duplicate shape IDs
+                _fix_duplicate_shape_ids(new_slide.shapes._spTree)
 
                 # Fill with application data
                 fill_slide(new_slide, apps_data[i])

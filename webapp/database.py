@@ -193,6 +193,13 @@ def init_db():
     """Initialize database and create all tables"""
     global engine, SessionLocal
 
+    # Diagnostic logging for Streamlit Cloud
+    db_exists = os.path.exists(DATABASE_PATH)
+    db_size = os.path.getsize(DATABASE_PATH) if db_exists else 0
+    print(f"[DB_INIT] DATABASE_PATH = {DATABASE_PATH}")
+    print(f"[DB_INIT] File exists = {db_exists}, Size = {db_size} bytes")
+    print(f"[DB_INIT] __file__ = {os.path.abspath(__file__)}")
+
     # Ensure data directory exists
     os.makedirs(os.path.dirname(DATABASE_PATH), exist_ok=True)
 
@@ -201,6 +208,16 @@ def init_db():
 
     # Create all tables
     Base.metadata.create_all(engine)
+
+    # Check if data was loaded
+    try:
+        from sqlalchemy import text
+        with engine.connect() as conn:
+            result = conn.execute(text("SELECT COUNT(*) FROM applications"))
+            count = result.scalar()
+            print(f"[DB_INIT] Applications in DB: {count}")
+    except Exception as e:
+        print(f"[DB_INIT] Error checking data: {e}")
 
     # Create session factory
     SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

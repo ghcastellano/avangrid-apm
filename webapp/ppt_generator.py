@@ -393,26 +393,49 @@ def fill_slide(slide, data_map):
 # Slide cloning with preserved relationship IDs
 # ============================================================
 
-def _copy_rels_with_rids(source_slide, new_slide, rids_needed):
-    """Copy relationships from source to new slide, preserving exact rIds.
-    This is critical: shape XML references rIds like rId5, rId6 etc.
-    If the new slide has different rIds, images/embeds won't load."""
+def _rebuild_rels_for_clone(source_slide, new_slide, rids_needed):
+    """Rebuild relationships on a cloned slide to match the source slide's rId mapping.
 
-    for rId, rel in source_slide.part.rels.items():
-        if rId not in rids_needed:
-            continue
-        # Skip slideLayout rel (already set by add_slide)
+    The problem: add_slide() auto-creates rId1 for slideLayout, but the source
+    template may use rId1 for tags and rId2 for slideLayout. Shape XML references
+    the original rIds, so we must match them exactly.
+
+    Solution: clear all auto-created rels, then copy ALL rels from source with
+    their exact rIds. For slideLayout, we reuse the same target but with the
+    source's rId.
+    """
+    from pptx.opc.package import _Relationship
+
+    # Get the slideLayout target (auto-created by add_slide)
+    layout_target = None
+    layout_base_uri = None
+    for rId, rel in new_slide.part.rels.items():
         if 'slideLayout' in rel.reltype:
-            continue
+            layout_target = rel._target
+            layout_base_uri = rel._base_uri
+            break
+
+    # Clear all auto-created rels
+    new_slide.part.rels._rels.clear()
+
+    # Copy ALL rels from source slide, preserving exact rIds
+    for rId, rel in source_slide.part.rels.items():
         try:
-            target = rel.target_part
-            if target is None:
+            if 'notesSlide' in rel.reltype:
+                # Skip notes - each slide should have its own (or none)
                 continue
-            # Check if this rId already exists on new slide
-            if rId in new_slide.part.rels:
-                continue
-            # Add relationship preserving the exact rId
-            new_slide.part.rels._rels[rId] = rel
+
+            if 'slideLayout' in rel.reltype:
+                # Use the layout target from the new slide
+                target = layout_target or rel._target
+            else:
+                target = rel._target
+                if target is None:
+                    continue
+
+            base_uri = layout_base_uri or rel._base_uri
+            new_rel = _Relationship(base_uri, rId, rel.reltype, rel._target_mode, target)
+            new_slide.part.rels._rels[rId] = new_rel
         except Exception:
             pass
 
@@ -508,8 +531,8 @@ def generate_portfolio_pptx():
                 for shape_elem in original_shapes:
                     new_slide.shapes._spTree.append(deepcopy(shape_elem))
 
-                # Copy ALL referenced relationships preserving exact rIds
-                _copy_rels_with_rids(template_slide, new_slide, referenced_rids)
+                # Rebuild ALL relationships matching source slide's rId mapping
+                _rebuild_rels_for_clone(template_slide, new_slide, referenced_rids)
 
                 # Fix duplicate shape IDs
                 _fix_duplicate_shape_ids(new_slide.shapes._spTree)

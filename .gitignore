@@ -41,8 +41,8 @@ temp_*
 # Large Excel files (data files, not code)
 *.xlsx
 
-# Streamlit
-.streamlit/
+# Streamlit secrets (NOT config)
+.streamlit/secrets.toml
 
 # Old generator scripts
 generate_*.py

@@ -1,0 +1,16 @@
+[theme]
+primaryColor = "#E87722"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F8F9FA"
+textColor = "#111827"
+font = "sans serif"
+
+[server]
+headless = true
+port = 8501
+
+[client]
+showSidebarNavigation = true
+
+[ui]
+hideTopBar = false

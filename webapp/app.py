@@ -3381,21 +3381,34 @@ def page_calculator():
                 st.success("Changes saved successfully!")
                 st.rerun()
 
-            # Export to CSV
-            export_df = edited_df.drop(columns=['app_id'])
-            csv = export_df.to_csv(index=False)
+            # Export buttons
+            st.markdown("---")
+            st.markdown("### Export Portfolio")
+            col_xl, col_ppt = st.columns(2)
 
-            col_csv, col_ppt = st.columns(2)
-            with col_csv:
-                st.download_button(
-                    label="📥 Download Calculator (CSV)",
-                    data=csv,
-                    file_name=f"avangrid_calculator_{datetime.now().strftime('%Y%m%d')}.csv",
-                    mime="text/csv",
-                    use_container_width=True
-                )
+            with col_xl:
+                if st.button("📥 Generate Portfolio Excel", use_container_width=True, type="primary", key="gen_excel"):
+                    with st.spinner("Generating Excel with all sheets (Calculator, Dashboard, Roadmap, App Groups, Value Chain, App Sheets)..."):
+                        from excel_generator import generate_portfolio_excel
+                        xlsx_bytes = generate_portfolio_excel(custom_weights=st.session_state.get('custom_weights'))
+                        if xlsx_bytes:
+                            st.session_state['xlsx_data'] = xlsx_bytes
+                            st.session_state['xlsx_ready'] = True
+                            st.rerun()
+                        else:
+                            st.error("No application data available.")
+
+                if st.session_state.get('xlsx_ready'):
+                    st.download_button(
+                        label="⬇️ Download Portfolio Excel",
+                        data=st.session_state['xlsx_data'],
+                        file_name=f"Avangrid_Application_Portfolio_Management_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True
+                    )
+
             with col_ppt:
-                if st.button("📊 Generate Portfolio PowerPoint", use_container_width=True, type="primary"):
+                if st.button("📊 Generate Portfolio PowerPoint", use_container_width=True, type="primary", key="gen_ppt"):
                     with st.spinner("Generating PowerPoint with all application cards..."):
                         from ppt_generator import generate_portfolio_pptx
                         pptx_bytes = generate_portfolio_pptx()
@@ -3404,7 +3417,7 @@ def page_calculator():
                             st.session_state['pptx_ready'] = True
                             st.rerun()
                         else:
-                            st.error("No application data available to generate PowerPoint.")
+                            st.error("No application data available.")
 
                 if st.session_state.get('pptx_ready'):
                     st.download_button(

@@ -2044,8 +2044,10 @@ def page_applications():
         st.markdown("---")
 
         # Display by synergy block
+        current_weights = get_current_weights()
         for block_name, block_info in SYNERGY_BLOCKS.items():
-            with st.expander(f"📋 {block_name} (Weight: {block_info['Weight']}%)", expanded=False):
+            w = current_weights.get(block_name, block_info['Weight'])
+            with st.expander(f"📋 {block_name} (Weight: {w}%)", expanded=False):
                 # Get questions for this block
                 block_questions = MASTER_QUESTIONS.get(block_name, [])
 

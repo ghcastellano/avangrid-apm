@@ -393,48 +393,23 @@ def fill_slide(slide, data_map):
 # Slide cloning with preserved relationship IDs
 # ============================================================
 
-def _rebuild_rels_for_clone(source_slide, new_slide, rids_needed):
-    """Rebuild relationships on a cloned slide to match the source slide's rId mapping.
-
-    The problem: add_slide() auto-creates rId1 for slideLayout, but the source
-    template may use rId1 for tags and rId2 for slideLayout. Shape XML references
-    the original rIds, so we must match them exactly.
-
-    Solution: clear all auto-created rels, then copy ALL rels from source with
-    their exact rIds. For slideLayout, we reuse the same target but with the
-    source's rId.
-    """
+def _copy_image_rels(source_slide, new_slide, rids_needed):
+    """Copy only image relationships from source to new slide, preserving rIds.
+    Skip tags, oleObject, notesSlide - these are slide-specific and can't be shared."""
     from pptx.opc.package import _Relationship
 
-    # Get the slideLayout target (auto-created by add_slide)
-    layout_target = None
-    layout_base_uri = None
-    for rId, rel in new_slide.part.rels.items():
-        if 'slideLayout' in rel.reltype:
-            layout_target = rel._target
-            layout_base_uri = rel._base_uri
-            break
-
-    # Clear all auto-created rels
-    new_slide.part.rels._rels.clear()
-
-    # Copy ALL rels from source slide, preserving exact rIds
     for rId, rel in source_slide.part.rels.items():
+        if rId not in rids_needed:
+            continue
+        # Only copy image relationships
+        if 'image' not in rel.reltype:
+            continue
         try:
-            if 'notesSlide' in rel.reltype:
-                # Skip notes - each slide should have its own (or none)
+            if rId in new_slide.part.rels:
                 continue
-
-            if 'slideLayout' in rel.reltype:
-                # Use the layout target from the new slide
-                target = layout_target or rel._target
-            else:
-                target = rel._target
-                if target is None:
-                    continue
-
-            base_uri = layout_base_uri or rel._base_uri
-            new_rel = _Relationship(base_uri, rId, rel.reltype, rel._target_mode, target)
+            new_rel = _Relationship(
+                rel._base_uri, rId, rel.reltype, rel._target_mode, rel._target
+            )
             new_slide.part.rels._rels[rId] = new_rel
         except Exception:
             pass
@@ -497,16 +472,20 @@ def generate_portfolio_pptx():
         prs = Presentation(TEMPLATE_PATH)
 
         # Save original template shapes XML for cloning
+        # Exclude graphicFrame (OLE objects) - they reference tags/oleObject
+        # that are slide-specific and cannot be shared across slides
         template_slide = prs.slides[0]
         original_shapes = []
         for child in template_slide.shapes._spTree:
             tag_local = child.tag.split('}')[-1] if '}' in child.tag else child.tag
-            if tag_local in ('sp', 'pic', 'grpSp', 'graphicFrame', 'cxnSp'):
+            if tag_local in ('sp', 'pic', 'grpSp', 'cxnSp'):
                 original_shapes.append(deepcopy(child))
+            # Skip graphicFrame entirely - these are OLE objects that cause
+            # PowerPoint repair errors when shared across slides
 
-        # Discover which rIds are referenced by shape XML
-        shapes_xml = etree.tostring(template_slide.shapes._spTree, encoding='unicode')
-        referenced_rids = set(_re.findall(r'r:(?:embed|link|id)="(rId\d+)"', shapes_xml))
+        # Discover which rIds are referenced by clonable shapes only
+        clone_xml = ''.join(etree.tostring(s, encoding='unicode') for s in original_shapes)
+        referenced_rids = set(_re.findall(r'r:(?:embed|link|id)="(rId\d+)"', clone_xml))
 
         # Fix duplicate shape IDs in template slide (template has dupes)
         _fix_duplicate_shape_ids(template_slide.shapes._spTree)
@@ -531,8 +510,8 @@ def generate_portfolio_pptx():
                 for shape_elem in original_shapes:
                     new_slide.shapes._spTree.append(deepcopy(shape_elem))
 
-                # Rebuild ALL relationships matching source slide's rId mapping
-                _rebuild_rels_for_clone(template_slide, new_slide, referenced_rids)
+                # Copy only image relationships (skip tags/oleObject/notes)
+                _copy_image_rels(template_slide, new_slide, referenced_rids)
 
                 # Fix duplicate shape IDs
                 _fix_duplicate_shape_ids(new_slide.shapes._spTree)

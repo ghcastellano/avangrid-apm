@@ -12,9 +12,15 @@ from streamlit_option_menu import option_menu
 import uuid
 import io
 import os
+import sys
 import json
 from datetime import datetime
 import difflib
+
+# Ensure webapp directory is in Python path (needed for Streamlit Cloud)
+_WEBAPP_DIR = os.path.dirname(os.path.abspath(__file__))
+if _WEBAPP_DIR not in sys.path:
+    sys.path.insert(0, _WEBAPP_DIR)
 
 # Import local modules
 from database import (
@@ -36,8 +42,6 @@ from ai_processor import (
 )
 
 # Import existing parsing logic
-import sys
-sys.path.append('..')
 try:
     import openpyxl
     from openpyxl import load_workbook, Workbook
@@ -3410,14 +3414,17 @@ def page_calculator():
             with col_ppt:
                 if st.button("📊 Generate Portfolio PowerPoint", use_container_width=True, type="primary", key="gen_ppt"):
                     with st.spinner("Generating PowerPoint with all application cards..."):
-                        from ppt_generator import generate_portfolio_pptx
-                        pptx_bytes = generate_portfolio_pptx()
-                        if pptx_bytes:
-                            st.session_state['pptx_data'] = pptx_bytes
-                            st.session_state['pptx_ready'] = True
-                            st.rerun()
-                        else:
-                            st.error("No application data available.")
+                        try:
+                            from ppt_generator import generate_portfolio_pptx
+                            pptx_bytes = generate_portfolio_pptx()
+                            if pptx_bytes:
+                                st.session_state['pptx_data'] = pptx_bytes
+                                st.session_state['pptx_ready'] = True
+                                st.rerun()
+                            else:
+                                st.error("No application data available.")
+                        except Exception as e:
+                            st.error(f"Error generating PowerPoint: {str(e)}")
 
                 if st.session_state.get('pptx_ready'):
                     st.download_button(

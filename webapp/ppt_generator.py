@@ -189,10 +189,12 @@ def map_question_to_field(question_text, answer_text):
 # Data extraction from database
 # ============================================================
 
-def extract_app_data_from_db(app_id, app_name):
+def extract_app_data_from_db(app_id, app_name, session=None):
     """Extract all data for an application from all database sources.
     Priority: DavidNote > TranscriptAnswer > QuestionnaireAnswer
     (later sources overwrite earlier ones, so highest-priority is last)
+
+    If session is provided, uses it instead of creating a new one (avoids SQLite locking).
     """
     data = {
         "NOME_DO_APP": app_name,
@@ -208,7 +210,9 @@ def extract_app_data_from_db(app_id, app_name):
         "BUGS_INCIDENTS": "", "ENHANCEMENTS": ""
     }
 
-    session = get_session()
+    own_session = session is None
+    if own_session:
+        session = get_session()
     try:
         # 1. Questionnaire answers (lowest priority - overwritten by others)
         qa_answers = session.query(QuestionnaireAnswer).filter_by(
@@ -216,7 +220,8 @@ def extract_app_data_from_db(app_id, app_name):
         ).all()
         for qa in qa_answers:
             field, value = map_question_to_field(qa.question_text or "", qa.answer_text or "")
-            if field and value:
+            if field and value and field != "NOME_DO_APP":
+                # Never overwrite NOME_DO_APP - we use the database app name
                 data[field] = value
 
         # 2. Transcript answers (medium priority)
@@ -225,7 +230,7 @@ def extract_app_data_from_db(app_id, app_name):
         ).all()
         for ta in ta_answers:
             field, value = map_question_to_field(ta.question_text or "", ta.answer_text or "")
-            if field and value:
+            if field and value and field != "NOME_DO_APP":
                 data[field] = value
 
         # 3. David's notes (highest priority - overwrites everything)
@@ -234,7 +239,7 @@ def extract_app_data_from_db(app_id, app_name):
         ).all()
         for dn in david_notes:
             field, value = map_question_to_field(dn.question_text or "", dn.answer_text or "")
-            if field and value:
+            if field and value and field != "NOME_DO_APP":
                 data[field] = value
 
         # Also try to extract owner info from David's notes that may have
@@ -250,7 +255,8 @@ def extract_app_data_from_db(app_id, app_name):
                 data["IT_OWNER"] = a
 
     finally:
-        close_session(session)
+        if own_session:
+            close_session(session)
 
     return data
 
@@ -308,25 +314,31 @@ def fill_slide(slide, data_map):
         if shape.name in emoji_pictures:
             shapes_to_delete.append(shape)
     for shape in shapes_to_delete:
-        sp = shape.element
-        sp.getparent().remove(sp)
+        try:
+            sp = shape.element
+            sp.getparent().remove(sp)
+        except Exception:
+            pass
 
     # Step 1: Replace {{FIELD_NAME}} placeholders
     for shape in slide.shapes:
-        if not shape.has_text_frame:
-            continue
-        text = shape.text_frame.text.strip()
-        if text.startswith('{{') and text.endswith('}}'):
-            placeholder = text[2:-2]
-            if placeholder == "NOME_DO_APP":
-                val = data_map.get(placeholder, "")
-                if val:
-                    set_text(shape.text_frame, val, font_size=12, bold=True)
-                else:
-                    shape.text_frame.clear()
-            elif placeholder in data_map:
-                val = data_map.get(placeholder, "")
-                auto_fit_text(shape.text_frame, val)
+        try:
+            if not shape.has_text_frame:
+                continue
+            text = shape.text_frame.text.strip()
+            if text.startswith('{{') and text.endswith('}}'):
+                placeholder = text[2:-2]
+                if placeholder == "NOME_DO_APP":
+                    val = data_map.get(placeholder, "")
+                    if val:
+                        set_text(shape.text_frame, val, font_size=12, bold=True)
+                    else:
+                        shape.text_frame.clear()
+                elif placeholder in data_map:
+                    val = data_map.get(placeholder, "")
+                    auto_fit_text(shape.text_frame, val)
+        except Exception:
+            pass
 
     # Step 2: Replace text-based placeholders
     placeholder_texts = {
@@ -338,14 +350,17 @@ def fill_slide(slide, data_map):
         "version, planned migrations": "PLANNED_UPGRADES",
     }
     for shape in slide.shapes:
-        if not shape.has_text_frame:
-            continue
-        text = shape.text_frame.text.strip().lower()
-        for placeholder_text, data_key in placeholder_texts.items():
-            if placeholder_text in text and data_key and data_key in data_map:
-                val = data_map.get(data_key, "")
-                auto_fit_text(shape.text_frame, val)
-                break
+        try:
+            if not shape.has_text_frame:
+                continue
+            text = shape.text_frame.text.strip().lower()
+            for placeholder_text, data_key in placeholder_texts.items():
+                if placeholder_text in text and data_key and data_key in data_map:
+                    val = data_map.get(data_key, "")
+                    auto_fit_text(shape.text_frame, val)
+                    break
+        except Exception:
+            pass
 
     # Step 3: Direct rectangle mapping
     direct_mappings = {
@@ -361,14 +376,17 @@ def fill_slide(slide, data_map):
         "Rectangle 182": "MONITORED",
     }
     for shape in slide.shapes:
-        if shape.name in direct_mappings:
-            data_key = direct_mappings[shape.name]
-            if data_key in data_map:
-                val = data_map.get(data_key, "")
-                if data_key == "SATISFACTION":
-                    set_text(shape.text_frame, val, font_size=16)
-                else:
-                    auto_fit_text(shape.text_frame, val)
+        try:
+            if shape.name in direct_mappings:
+                data_key = direct_mappings[shape.name]
+                if data_key in data_map and shape.has_text_frame:
+                    val = data_map.get(data_key, "")
+                    if data_key == "SATISFACTION":
+                        set_text(shape.text_frame, val, font_size=16)
+                    else:
+                        auto_fit_text(shape.text_frame, val)
+        except Exception:
+            pass
 
 
 # ============================================================
@@ -416,11 +434,15 @@ def generate_portfolio_pptx():
         if not apps:
             return None
 
-        # Extract data for all applications
+        # Extract data for all applications (pass session to avoid nested sessions)
         apps_data = []
         for app in apps:
-            data = extract_app_data_from_db(app.id, app.name)
-            apps_data.append(data)
+            try:
+                data = extract_app_data_from_db(app.id, app.name, session=session)
+                apps_data.append(data)
+            except Exception as e:
+                print(f"[PPT_GENERATOR] Error extracting data for {app.name}: {e}")
+                apps_data.append({"NOME_DO_APP": app.name})
 
         if not apps_data:
             return None
@@ -439,31 +461,43 @@ def generate_portfolio_pptx():
         # Also save image relationships
         image_rels = []
         for rel_key, rel in template_slide.part.rels.items():
-            if "image" in rel.reltype:
-                image_rels.append((rel.reltype, rel.target_part))
+            try:
+                if "image" in rel.reltype and rel.target_part is not None:
+                    image_rels.append((rel.reltype, rel.target_part))
+            except Exception:
+                pass
 
         # Fill first slide with first application
-        fill_slide(template_slide, apps_data[0])
+        try:
+            fill_slide(template_slide, apps_data[0])
+        except Exception as e:
+            print(f"[PPT_GENERATOR] Error filling first slide ({apps_data[0].get('NOME_DO_APP', '?')}): {e}")
 
         # For remaining applications, clone template and fill
         for i in range(1, len(apps_data)):
-            layout = template_slide.slide_layout
-            new_slide = prs.slides.add_slide(layout)
+            try:
+                layout = template_slide.slide_layout
+                new_slide = prs.slides.add_slide(layout)
 
-            # Remove default shapes from layout
-            for shape in list(new_slide.shapes):
-                new_slide.shapes._spTree.remove(shape.element)
+                # Remove default shapes from layout
+                for shape in list(new_slide.shapes):
+                    new_slide.shapes._spTree.remove(shape.element)
 
-            # Insert cloned original template shapes
-            for shape_elem in original_shapes:
-                new_slide.shapes._spTree.append(deepcopy(shape_elem))
+                # Insert cloned original template shapes
+                for shape_elem in original_shapes:
+                    new_slide.shapes._spTree.append(deepcopy(shape_elem))
 
-            # Copy image relationships
-            for reltype, target_part in image_rels:
-                new_slide.part.rels.get_or_add(reltype, target_part)
+                # Copy image relationships safely
+                for reltype, target_part in image_rels:
+                    try:
+                        new_slide.part.rels.get_or_add(reltype, target_part)
+                    except Exception as rel_err:
+                        print(f"[PPT_GENERATOR] Warning: could not copy image rel for slide {i}: {rel_err}")
 
-            # Fill with application data
-            fill_slide(new_slide, apps_data[i])
+                # Fill with application data
+                fill_slide(new_slide, apps_data[i])
+            except Exception as e:
+                print(f"[PPT_GENERATOR] Error creating slide {i} ({apps_data[i].get('NOME_DO_APP', '?')}): {e}")
 
         # Save to bytes buffer
         buffer = io.BytesIO()
@@ -471,6 +505,11 @@ def generate_portfolio_pptx():
         buffer.seek(0)
         return buffer.getvalue()
 
+    except Exception as e:
+        print(f"[PPT_GENERATOR] Critical error generating PPTX: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
     finally:
         close_session(session)
 

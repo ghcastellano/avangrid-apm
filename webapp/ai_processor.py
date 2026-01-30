@@ -12,8 +12,21 @@ import time
 
 load_dotenv()
 
-# Initialize OpenAI client
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+# Initialize OpenAI client - support both .env and Streamlit secrets
+def _get_openai_key():
+    key = os.getenv("OPENAI_API_KEY")
+    if key:
+        return key
+    try:
+        import streamlit as st
+        key = st.secrets.get("OPENAI_API_KEY")
+        if key:
+            return key
+    except Exception:
+        pass
+    return None
+
+client = OpenAI(api_key=_get_openai_key())
 
 # Master Questions (from existing system)
 MASTER_QUESTIONS = {

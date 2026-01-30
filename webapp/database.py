@@ -12,8 +12,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Database setup
-DATABASE_PATH = os.getenv("DATABASE_PATH", "data/avangrid.db")
+# Database setup - use path relative to this file for portability
+_DEFAULT_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "avangrid.db")
+DATABASE_PATH = os.getenv("DATABASE_PATH", _DEFAULT_DB_PATH)
 Base = declarative_base()
 
 class Application(Base):

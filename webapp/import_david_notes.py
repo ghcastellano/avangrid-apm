@@ -7,7 +7,7 @@ These notes provide comprehensive insights and answers from David's meetings wit
 import sys
 import os
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 # Ensure webapp modules can be imported
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -378,7 +378,7 @@ def import_david_notes():
                         answer_text=note_data['insights'].strip(),
                         synergy_block="Strategic Fit",
                         note_type='insight',
-                        created_at=datetime.utcnow()
+                        created_at=datetime.now(timezone.utc)
                     )
                     session.add(insight_note)
                     imported_count += 1
@@ -408,7 +408,7 @@ def import_david_notes():
                     answer_text=answer.strip(),
                     synergy_block=synergy_block,
                     note_type='answer',
-                    created_at=datetime.utcnow()
+                    created_at=datetime.now(timezone.utc)
                 )
                 session.add(note)
                 imported_count += 1

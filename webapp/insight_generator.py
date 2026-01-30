@@ -6,7 +6,7 @@ Generates deep, actionable insights by combining transcript analysis with market
 import json
 import uuid
 from typing import List, Dict, Tuple
-from datetime import datetime
+from datetime import datetime, timezone
 from openai import OpenAI
 import os
 from dotenv import load_dotenv
@@ -277,7 +277,7 @@ def save_app_insights(app_id: str, insights: Dict, session):
                 evidence=insights.get('evidence', []),
                 action_items=insights.get('action_items', []),
                 affected_systems=content.get('can_consolidate_with', []) if insight_type == 'integration_opportunities' else [],
-                generated_at=datetime.utcnow(),
+                generated_at=datetime.now(timezone.utc),
                 model_version=model_version
             )
             session.add(app_insight)
@@ -451,7 +451,7 @@ def save_portfolio_insights(insights: Dict, session):
             estimated_impact=opp.get('estimated_impact', 'medium'),
             complexity=opp.get('complexity', 'medium'),
             recommended_action=opp.get('target_state', ''),
-            generated_at=datetime.utcnow(),
+            generated_at=datetime.now(timezone.utc),
             model_version=model_version
         )
         session.add(portfolio_insight)
@@ -468,7 +468,7 @@ def save_portfolio_insights(insights: Dict, session):
             estimated_impact=win.get('impact', 'high'),
             complexity='low',
             recommended_action=win['opportunity'],
-            generated_at=datetime.utcnow(),
+            generated_at=datetime.now(timezone.utc),
             model_version=model_version
         )
         session.add(portfolio_insight)
@@ -485,7 +485,7 @@ def save_portfolio_insights(insights: Dict, session):
             estimated_impact=risk['severity'],
             complexity='medium',
             recommended_action=risk.get('mitigation', ''),
-            generated_at=datetime.utcnow(),
+            generated_at=datetime.now(timezone.utc),
             model_version=model_version
         )
         session.add(portfolio_insight)

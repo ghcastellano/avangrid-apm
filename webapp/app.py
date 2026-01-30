@@ -14,7 +14,7 @@ import io
 import os
 import sys
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict
 import difflib
 
@@ -90,14 +90,13 @@ def save_weights_to_db():
         return
     session = get_session()
     try:
-        from datetime import datetime
         for block_name, weight in st.session_state.custom_weights.items():
             existing = session.query(CustomWeight).filter_by(block_name=block_name).first()
             if existing:
                 existing.weight = weight
-                existing.updated_at = datetime.utcnow()
+                existing.updated_at = datetime.now(timezone.utc)
             else:
-                session.add(CustomWeight(block_name=block_name, weight=weight, updated_at=datetime.utcnow()))
+                session.add(CustomWeight(block_name=block_name, weight=weight, updated_at=datetime.now(timezone.utc)))
         session.commit()
     except Exception:
         session.rollback()
@@ -1503,7 +1502,7 @@ def page_dashboard():
                 height=350,
                 margin=dict(t=30, b=30, l=30, r=30)
             )
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
 
         with col2:
             # Key Highlights
@@ -1536,22 +1535,22 @@ def page_dashboard():
         col1, col2, col3 = st.columns(3)
 
         with col1:
-            if st.button("📤 Upload Data", use_container_width=True, key="qa_upload"):
+            if st.button("📤 Upload Data", width="stretch", key="qa_upload"):
                 st.session_state.current_page = 'Uploads'
                 st.rerun()
 
         with col2:
-            if st.button("📊 View Analytics", use_container_width=True, key="qa_analytics"):
+            if st.button("📊 View Analytics", width="stretch", key="qa_analytics"):
                 st.session_state.current_page = 'Analyses'
                 st.rerun()
 
         with col3:
-            if st.button("💡 Generate Insights", use_container_width=True, key="qa_insights"):
+            if st.button("💡 Generate Insights", width="stretch", key="qa_insights"):
                 st.session_state.current_page = 'Insights'
                 st.rerun()
 
         with col3:
-            if st.button("📱 View Applications", use_container_width=True):
+            if st.button("📱 View Applications", width="stretch"):
                 st.session_state.current_page = 'Applications'
                 st.rerun()
 
@@ -1670,7 +1669,7 @@ def page_uploads():
                                                             rationale=score_data.get('rationale', ''),
                                                             approved=True,
                                                             approved_by='auto_ai_generated',
-                                                            approved_at=datetime.utcnow()
+                                                            approved_at=datetime.now(timezone.utc)
                                                         )
                                                         session.add(score)
 
@@ -1728,10 +1727,10 @@ def page_uploads():
                 col1, col2 = st.columns(2)
 
                 with col1:
-                    quick_upload = st.button("📁 Quick Upload (Save Only)", type="secondary", use_container_width=True,
+                    quick_upload = st.button("📁 Quick Upload (Save Only)", type="secondary", width="stretch",
                                             help="Save files to database without processing. Process later in Batch Operations.")
                 with col2:
-                    process_now = st.button("🤖 Upload & Process Now", type="primary", use_container_width=True,
+                    process_now = st.button("🤖 Upload & Process Now", type="primary", width="stretch",
                                            help="Save and process all files immediately with AI.")
 
             # Quick Upload (Save only, no processing)
@@ -1816,17 +1815,6 @@ def page_uploads():
                 import time
                 start_time = time.time()
 
-                # Create UI containers for real-time updates
-                st.markdown(f"### 🤖 Processing {len(uploaded_transcripts)} transcript(s)")
-
-                progress_container = st.container()
-                with progress_container:
-                    progress_bar = st.progress(0)
-                    progress_text = st.empty()
-                    status_spinner = st.empty()
-
-                log_container = st.expander("📋 Processing Log", expanded=True)
-
                 processed_count = 0
                 skipped_count = 0
                 error_count = 0
@@ -1835,132 +1823,130 @@ def page_uploads():
                 # Track which apps were processed
                 apps_processed = {}
 
-                for idx, uploaded_file in enumerate(uploaded_transcripts):
-                    # Update progress percentage
-                    progress = (idx) / len(uploaded_transcripts)
-                    progress_bar.progress(progress)
+                with st.status(f"🤖 Processing {len(uploaded_transcripts)} transcript(s)...", expanded=True) as status:
+                    progress_bar = st.progress(0)
 
-                    # Estimate time remaining
-                    if idx > 0:
-                        elapsed = time.time() - start_time
-                        avg_time = elapsed / idx
-                        remaining = avg_time * (len(uploaded_transcripts) - idx)
-                        progress_text.markdown(f"**Progress:** {idx}/{len(uploaded_transcripts)} • **Estimated time remaining:** {int(remaining)}s")
-                    else:
-                        progress_text.markdown(f"**Progress:** {idx}/{len(uploaded_transcripts)} • Starting...")
+                    for idx, uploaded_file in enumerate(uploaded_transcripts):
+                        # Update progress percentage
+                        progress = (idx) / len(uploaded_transcripts)
+                        progress_bar.progress(progress)
 
-                    # Show spinner for current file
-                    with status_spinner:
-                        with st.spinner(f"🔄 Processing: {uploaded_file.name}"):
-                            with log_container:
-                                try:
-                                    # Extract application name from filename
-                                    filename = uploaded_file.name
-                                    if " - " in filename:
-                                        # Pattern: "AppName - Description.ext"
-                                        app_name_from_file = filename.split(" - ")[0].strip()
-                                    else:
-                                        # No separator - use filename without extension
-                                        app_name_from_file = filename.rsplit('.', 1)[0].strip()
+                        # Estimate time remaining
+                        if idx > 0:
+                            elapsed = time.time() - start_time
+                            avg_time = elapsed / idx
+                            remaining = avg_time * (len(uploaded_transcripts) - idx)
+                            status.update(label=f"🤖 Processing {idx+1}/{len(uploaded_transcripts)}: {uploaded_file.name} (~{int(remaining)}s remaining)")
+                        else:
+                            status.update(label=f"🤖 Processing 1/{len(uploaded_transcripts)}: {uploaded_file.name}")
 
-                                    # Find matching application using smart matching
-                                    matched_app, match_type = find_matching_application(app_name_from_file, app_dict)
+                        try:
+                            # Extract application name from filename
+                            filename = uploaded_file.name
+                            if " - " in filename:
+                                # Pattern: "AppName - Description.ext"
+                                app_name_from_file = filename.split(" - ")[0].strip()
+                            else:
+                                # No separator - use filename without extension
+                                app_name_from_file = filename.rsplit('.', 1)[0].strip()
 
-                                    if not matched_app:
-                                        st.warning(f"⚠️ {filename}: Application '{app_name_from_file}' not found in database")
-                                        unmatched_count += 1
-                                        continue
+                            # Find matching application using smart matching
+                            matched_app, match_type = find_matching_application(app_name_from_file, app_dict)
 
-                                    if match_type != 'exact':
-                                        st.info(f"ℹ️ {filename}: Matched to '{matched_app.name}' ({match_type})")
+                            if not matched_app:
+                                st.warning(f"⚠️ {filename}: Application '{app_name_from_file}' not found in database")
+                                unmatched_count += 1
+                                continue
 
-                                    # Track apps being processed
-                                    if matched_app.name not in apps_processed:
-                                        apps_processed[matched_app.name] = []
-                                    apps_processed[matched_app.name].append(filename)
+                            if match_type != 'exact':
+                                st.info(f"ℹ️ {filename}: Matched to '{matched_app.name}' ({match_type})")
 
-                                    # Check if transcript already exists and was processed
-                                    existing_transcript = session.query(MeetingTranscript).filter_by(
-                                        application_id=matched_app.id,
-                                        file_name=uploaded_file.name
-                                    ).first()
+                            # Track apps being processed
+                            if matched_app.name not in apps_processed:
+                                apps_processed[matched_app.name] = []
+                            apps_processed[matched_app.name].append(filename)
 
-                                    if existing_transcript and existing_transcript.processed:
-                                        st.info(f"⏭️ Skipping {uploaded_file.name} (already processed)")
-                                        skipped_count += 1
-                                        continue
+                            # Check if transcript already exists and was processed
+                            existing_transcript = session.query(MeetingTranscript).filter_by(
+                                application_id=matched_app.id,
+                                file_name=uploaded_file.name
+                            ).first()
 
-                                    # Read transcript
-                                    transcript_text = read_transcript_file(uploaded_file)
+                            if existing_transcript and existing_transcript.processed:
+                                st.info(f"⏭️ Skipping {uploaded_file.name} (already processed)")
+                                skipped_count += 1
+                                continue
 
-                                    if not transcript_text:
-                                        st.error(f"❌ Could not read {uploaded_file.name}")
-                                        error_count += 1
-                                        continue
+                            # Read transcript
+                            transcript_text = read_transcript_file(uploaded_file)
 
-                                    # Create or use existing transcript
-                                    if existing_transcript:
-                                        transcript = existing_transcript
-                                        transcript.transcript_text = transcript_text
-                                    else:
-                                        transcript = MeetingTranscript(
-                                            id=str(uuid.uuid4()),
-                                            application_id=matched_app.id,
-                                            file_name=uploaded_file.name,
-                                            transcript_text=transcript_text,
-                                            processed=False
-                                        )
-                                        session.add(transcript)
+                            if not transcript_text:
+                                st.error(f"❌ Could not read {uploaded_file.name}")
+                                error_count += 1
+                                continue
 
-                                    session.commit()
+                            # Create or use existing transcript
+                            if existing_transcript:
+                                transcript = existing_transcript
+                                transcript.transcript_text = transcript_text
+                            else:
+                                transcript = MeetingTranscript(
+                                    id=str(uuid.uuid4()),
+                                    application_id=matched_app.id,
+                                    file_name=uploaded_file.name,
+                                    transcript_text=transcript_text,
+                                    processed=False
+                                )
+                                session.add(transcript)
 
-                                    # Extract answers using AI
-                                    st.write(f"🤖 AI analyzing for **{matched_app.name}**...")
-                                    result = extract_answers_from_transcript(transcript_text, matched_app.name)
+                            session.commit()
 
-                                    if result.get('answers'):
-                                        answer_count = 0
-                                        # Save extracted answers (avoid duplicates)
-                                        for answer_data in result['answers']:
-                                            if answer_data.get('answer') and answer_data.get('confidence', 0) > 0.3:
-                                                # Check if this answer already exists for this transcript
-                                                existing_answer = session.query(TranscriptAnswer).filter_by(
-                                                    transcript_id=transcript.id,
-                                                    question_text=answer_data['question']
-                                                ).first()
+                            # Extract answers using AI
+                            st.write(f"🤖 AI analyzing for **{matched_app.name}**...")
+                            result = extract_answers_from_transcript(transcript_text, matched_app.name)
 
-                                                if not existing_answer:
-                                                    ta = TranscriptAnswer(
-                                                        id=str(uuid.uuid4()),
-                                                        application_id=matched_app.id,
-                                                        transcript_id=transcript.id,
-                                                        question_text=answer_data['question'],
-                                                        answer_text=answer_data['answer'],
-                                                        confidence_score=answer_data['confidence'],
-                                                        synergy_block=answer_data.get('synergy_block', 'Unknown')
-                                                    )
-                                                    session.add(ta)
-                                                    answer_count += 1
+                            if result.get('answers'):
+                                answer_count = 0
+                                # Save extracted answers (avoid duplicates)
+                                for answer_data in result['answers']:
+                                    if answer_data.get('answer') and answer_data.get('confidence', 0) > 0.3:
+                                        # Check if this answer already exists for this transcript
+                                        existing_answer = session.query(TranscriptAnswer).filter_by(
+                                            transcript_id=transcript.id,
+                                            question_text=answer_data['question']
+                                        ).first()
 
-                                        transcript.processed = True
-                                        session.commit()
+                                        if not existing_answer:
+                                            ta = TranscriptAnswer(
+                                                id=str(uuid.uuid4()),
+                                                application_id=matched_app.id,
+                                                transcript_id=transcript.id,
+                                                question_text=answer_data['question'],
+                                                answer_text=answer_data['answer'],
+                                                confidence_score=answer_data['confidence'],
+                                                synergy_block=answer_data.get('synergy_block', 'Unknown')
+                                            )
+                                            session.add(ta)
+                                            answer_count += 1
 
-                                        st.success(f"✅ **{matched_app.name}** - {uploaded_file.name}: Extracted {answer_count} new answers")
-                                        processed_count += 1
+                                transcript.processed = True
+                                session.commit()
 
-                                    else:
-                                        st.warning(f"⚠️ {uploaded_file.name}: No answers extracted")
-                                        processed_count += 1
+                                st.success(f"✅ **{matched_app.name}** - {uploaded_file.name}: Extracted {answer_count} new answers")
+                                processed_count += 1
 
-                                except Exception as e:
-                                    st.error(f"❌ Error processing {uploaded_file.name}: {str(e)}")
-                                    error_count += 1
+                            else:
+                                st.warning(f"⚠️ {uploaded_file.name}: No answers extracted")
+                                processed_count += 1
 
-                # Update final progress
-                progress_bar.progress(1.0)
-                total_time = time.time() - start_time
-                progress_text.markdown(f"**✅ Complete!** Processed {len(uploaded_transcripts)} files in {int(total_time)}s")
-                status_spinner.empty()
+                        except Exception as e:
+                            st.error(f"❌ Error processing {uploaded_file.name}: {str(e)}")
+                            error_count += 1
+
+                    # Update final progress
+                    progress_bar.progress(1.0)
+                    total_time = time.time() - start_time
+                    status.update(label=f"✅ Complete! Processed {len(uploaded_transcripts)} files in {int(total_time)}s", state="complete", expanded=False)
 
                 # Final summary - Make it very prominent
                 st.markdown("---")
@@ -2048,7 +2034,7 @@ def page_uploads():
                                                     rationale=score_data.get('rationale', ''),
                                                     approved=True,
                                                     approved_by='auto_ai_generated',
-                                                    approved_at=datetime.utcnow()
+                                                    approved_at=datetime.now(timezone.utc)
                                                 )
                                                 session.add(score)
 
@@ -2210,7 +2196,7 @@ def page_applications():
                     # Configure column widths and text wrapping
                     st.dataframe(
                         df,
-                        use_container_width=True,
+                        width="stretch",
                         height=calculated_height,  # Dynamic height based on number of rows
                         column_config={
                             "Question": st.column_config.TextColumn(
@@ -2271,7 +2257,7 @@ def page_applications():
                                 rationale='Manually set score',
                                 approved=True,
                                 approved_by='manual_edit',
-                                approved_at=datetime.utcnow()
+                                approved_at=datetime.now(timezone.utc)
                             )
                             session.add(new_score_obj)
 
@@ -2324,27 +2310,27 @@ def page_applications():
             # PRIORITY 1: David's General Insights
             # ===========================================
             if david_insights:
-                with st.expander("🎯 **David's Key Insights** (Fonte: Reuniões com Stakeholders)", expanded=True):
+                with st.expander("🎯 **David's Key Insights** (Source: Stakeholder Meetings)", expanded=True):
                     st.markdown("""
                     <div style="background: #FEF3C7; padding: 1rem; border-radius: 8px; border-left: 4px solid #F59E0B;">
                         <p style="margin: 0; color: #92400E;">
-                            <strong>📍 Fonte:</strong> Anotações detalhadas das reuniões do David com stakeholders e SMEs
+                            <strong>📍 Source:</strong> Detailed notes from David's meetings with stakeholders and SMEs
                         </p>
                     </div>
                     """, unsafe_allow_html=True)
 
-                    st.markdown("#### Resumo Executivo")
+                    st.markdown("#### Executive Summary")
                     st.info(david_insights.answer_text)
 
             # ===========================================
             # PRIORITY 2: David's Detailed Answers
             # ===========================================
             if david_answers:
-                with st.expander(f"📝 **Análise Detalhada do David** ({len(david_answers)} insights)", expanded=False):
+                with st.expander(f"📝 **David's Detailed Analysis** ({len(david_answers)} insights)", expanded=False):
                     st.markdown("""
                     <div style="background: #FEF3C7; padding: 1rem; border-radius: 8px; border-left: 4px solid #F59E0B;">
                         <p style="margin: 0; color: #92400E;">
-                            <strong>📍 Fonte:</strong> Respostas específicas coletadas pelo David durante entrevistas com usuários e gestores
+                            <strong>📍 Source:</strong> Specific responses collected by David during interviews with users and managers
                         </p>
                     </div>
                     """, unsafe_allow_html=True)
@@ -2373,11 +2359,11 @@ def page_applications():
             # ===========================================
             high_conf_transcripts = [ta for ta in transcript_answers if ta.confidence_score >= 0.7]
             if high_conf_transcripts:
-                with st.expander(f"🎙️ **Insights de Transcrições** ({len(high_conf_transcripts)} com alta confiança)", expanded=False):
+                with st.expander(f"🎙️ **Transcript Insights** ({len(high_conf_transcripts)} with high confidence)", expanded=False):
                     st.markdown("""
                     <div style="background: #DBEAFE; padding: 1rem; border-radius: 8px; border-left: 4px solid #3B82F6;">
                         <p style="margin: 0; color: #1E3A8A;">
-                            <strong>📍 Fonte:</strong> Extraído de transcrições de reuniões usando IA (confiança ≥ 70%)
+                            <strong>📍 Source:</strong> Extracted from meeting transcripts using AI (confidence >= 70%)
                         </p>
                     </div>
                     """, unsafe_allow_html=True)
@@ -2402,11 +2388,11 @@ def page_applications():
             # PRIORITY 4: AI-Generated Strategic Insights
             # ===========================================
             if app_insights:
-                with st.expander(f"🤖 **Insights Gerados por IA** ({len(app_insights)} análises)", expanded=False):
+                with st.expander(f"🤖 **AI-Generated Insights** ({len(app_insights)} analyses)", expanded=False):
                     st.markdown("""
                     <div style="background: #F3E8FF; padding: 1rem; border-radius: 8px; border-left: 4px solid #9333EA;">
                         <p style="margin: 0; color: #581C87;">
-                            <strong>📍 Fonte:</strong> Análise estratégica gerada por GPT-4o baseada em questionários, transcrições e pesquisa de mercado
+                            <strong>📍 Source:</strong> Strategic analysis generated by GPT-4o based on questionnaires, transcripts, and market research
                         </p>
                     </div>
                     """, unsafe_allow_html=True)
@@ -2760,7 +2746,7 @@ def page_analyses():
                 font=dict(size=12)
             )
 
-            st.plotly_chart(fig, use_container_width=True, key="strategic_matrix_thi_bvi_v2")
+            st.plotly_chart(fig, width="stretch", key="strategic_matrix_thi_bvi_v2")
 
         with tab2:
             # Enhanced Insights Tab with Portfolio-Level Analysis
@@ -3430,7 +3416,7 @@ def page_calculator():
             edited_df = st.data_editor(
                 calc_df,
                 column_config=column_config,
-                use_container_width=True,
+                width="stretch",
                 height=600,
                 hide_index=True,
                 key='calculator_editor'
@@ -3481,7 +3467,7 @@ def page_calculator():
             col_xl, col_ppt = st.columns(2)
 
             with col_xl:
-                if st.button("📥 Generate Portfolio Excel", use_container_width=True, type="primary", key="gen_excel"):
+                if st.button("📥 Generate Portfolio Excel", width="stretch", type="primary", key="gen_excel"):
                     with st.spinner("Generating Excel with all sheets (Calculator, Dashboard, Roadmap, App Groups, Value Chain, App Sheets)..."):
                         from excel_generator import generate_portfolio_excel
                         xlsx_bytes = generate_portfolio_excel(custom_weights=st.session_state.get('custom_weights'))
@@ -3498,11 +3484,11 @@ def page_calculator():
                         data=st.session_state['xlsx_data'],
                         file_name=f"Avangrid_Application_Portfolio_Management_{datetime.now().strftime('%Y%m%d')}.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        use_container_width=True
+                        width="stretch"
                     )
 
             with col_ppt:
-                if st.button("📊 Generate Portfolio PowerPoint", use_container_width=True, type="primary", key="gen_ppt"):
+                if st.button("📊 Generate Portfolio PowerPoint", width="stretch", type="primary", key="gen_ppt"):
                     with st.spinner("Generating PowerPoint with all application cards..."):
                         try:
                             from ppt_generator import generate_portfolio_pptx
@@ -3522,7 +3508,7 @@ def page_calculator():
                         data=st.session_state['pptx_data'],
                         file_name=f"Avangrid_Portfolio_{datetime.now().strftime('%Y%m%d')}.pptx",
                         mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-                        use_container_width=True
+                        width="stretch"
                     )
         else:
             st.warning("No applications with approved scores found.")
@@ -3812,7 +3798,7 @@ def page_batch_operations():
                 st.markdown("---")
 
                 # Process button
-                if st.button("🚀 Process All Pending Transcripts", type="primary", use_container_width=True):
+                if st.button("🚀 Process All Pending Transcripts", type="primary", width="stretch"):
                     import time
                     start_time = time.time()
 
@@ -4007,7 +3993,7 @@ def page_batch_operations():
                 with col1:
                     overwrite = st.checkbox("🔄 Overwrite existing suggested scores", value=False)
                 with col2:
-                    if st.button("🎯 Calculate All Scores", type="primary", use_container_width=True):
+                    if st.button("🎯 Calculate All Scores", type="primary", width="stretch"):
                         st.markdown("### 🤖 Calculating Scores...")
 
                         progress_bar = st.progress(0)
@@ -4080,7 +4066,7 @@ def page_batch_operations():
                                                     rationale=score_data.get('rationale', ''),
                                                     approved=True,
                                                     approved_by='auto_ai_generated',
-                                                    approved_at=datetime.utcnow()
+                                                    approved_at=datetime.now(timezone.utc)
                                                 )
                                                 session.add(suggested_score)
 
@@ -4216,7 +4202,7 @@ def main():
             is_active = (current_page == label)
             css_class = "menu-btn-active" if is_active else "menu-btn-container"
             st.markdown(f'<div class="{css_class}">', unsafe_allow_html=True)
-            if st.button(f"{icon}  {label}", key=f"menu_{label}", use_container_width=True):
+            if st.button(f"{icon}  {label}", key=f"menu_{label}", width="stretch"):
                 st.session_state.current_page = label
                 st.rerun()
             st.markdown('</div>', unsafe_allow_html=True)
@@ -4553,7 +4539,7 @@ def main():
                 """, unsafe_allow_html=True)
 
                 st.markdown("<div style='margin: 0.75rem 0;'></div>", unsafe_allow_html=True)
-                if st.button("🚀 Process Queue", use_container_width=True, type="primary"):
+                if st.button("🚀 Process Queue", width="stretch", type="primary"):
                     st.session_state.current_page = "Batch Operations"
                     st.rerun()
 
@@ -4632,30 +4618,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-    # Temporary diagnostic for Streamlit Cloud debugging
-    with st.expander("🔧 Database Diagnostic (temporary)"):
-        import database as _db_mod
-        _db_path = _db_mod.DATABASE_PATH
-        _db_exists = os.path.exists(_db_path)
-        _db_size = os.path.getsize(_db_path) if _db_exists else 0
-        st.code(f"""DATABASE_PATH: {_db_path}
-File exists: {_db_exists}
-File size: {_db_size} bytes
-__file__ (database.py): {os.path.abspath(_db_mod.__file__)}
-CWD: {os.getcwd()}""")
-        try:
-            _diag_session = get_session()
-            _app_count = _diag_session.query(Application).count()
-            close_session(_diag_session)
-            st.code(f"Applications in DB: {_app_count}")
-        except Exception as _e:
-            st.error(f"DB query error: {_e}")
-
-        # Check if committed db file exists
-        _repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        _committed_db = os.path.join(_repo_root, "webapp", "data", "avangrid.db")
-        st.code(f"""Repo root: {_repo_root}
-Committed DB path: {_committed_db}
-Committed DB exists: {os.path.exists(_committed_db)}
-Committed DB size: {os.path.getsize(_committed_db) if os.path.exists(_committed_db) else 0}""")

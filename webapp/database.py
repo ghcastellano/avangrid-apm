@@ -6,7 +6,7 @@ SQLite database with SQLAlchemy ORM
 from sqlalchemy import create_engine, Column, String, Integer, Float, Boolean, Text, DateTime, ForeignKey, JSON
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
-from datetime import datetime
+from datetime import datetime, timezone
 import os
 from dotenv import load_dotenv
 
@@ -33,8 +33,8 @@ class Application(Base):
     is_green = Column(Boolean, default=False)
     subcategory = Column(String)
     quick_win = Column(Boolean, default=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
     # Relationships
     questionnaire_answers = relationship("QuestionnaireAnswer", back_populates="application", cascade="all, delete-orphan")
@@ -53,7 +53,7 @@ class QuestionnaireAnswer(Base):
     answer_text = Column(Text)
     score = Column(Integer)
     synergy_block = Column(String)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     application = relationship("Application", back_populates="questionnaire_answers")
 
@@ -65,7 +65,7 @@ class MeetingTranscript(Base):
     application_id = Column(String, ForeignKey('applications.id'))
     file_name = Column(String)
     transcript_text = Column(Text)
-    upload_date = Column(DateTime, default=datetime.utcnow)
+    upload_date = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     processed = Column(Boolean, default=False)
 
     application = relationship("Application", back_populates="transcripts")
@@ -83,7 +83,7 @@ class TranscriptAnswer(Base):
     confidence_score = Column(Float)  # 0.0 to 1.0
     extraction_method = Column(String, default='ai_extraction')
     synergy_block = Column(String)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     application = relationship("Application", back_populates="transcript_answers")
     transcript = relationship("MeetingTranscript", back_populates="answers")
@@ -98,7 +98,7 @@ class DavidNote(Base):
     answer_text = Column(Text)
     synergy_block = Column(String)
     note_type = Column(String, default='answer')  # 'answer' or 'insight'
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     application = relationship("Application", backref="david_notes")
 
@@ -113,7 +113,7 @@ class SynergyScore(Base):
     suggested_by = Column(String)  # 'manual', 'ai_questionnaire', 'ai_transcript'
     confidence = Column(Float)
     rationale = Column(Text)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     approved = Column(Boolean, default=False)
     approved_by = Column(String)
     approved_at = Column(DateTime)
@@ -132,7 +132,7 @@ class Insight(Base):
     priority = Column(String)  # 'P1', 'P2', 'P3'
     recommendation = Column(String)  # 'EVOLVE', 'INVEST', 'MAINTAIN', 'ELIMINATE'
     supporting_data = Column(JSON)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     application = relationship("Application", back_populates="insights")
 
@@ -148,7 +148,7 @@ class AppInsight(Base):
     evidence = Column(JSON)  # Supporting quotes from transcripts/questionnaire
     action_items = Column(JSON)  # List of specific action items
     affected_systems = Column(JSON)  # Other apps that might be affected
-    generated_at = Column(DateTime, default=datetime.utcnow)
+    generated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     model_version = Column(String)  # Track which model generated this
 
     application = relationship("Application", backref="app_insights")
@@ -166,7 +166,7 @@ class PortfolioInsight(Base):
     estimated_impact = Column(String)  # 'high', 'medium', 'low'
     complexity = Column(String)  # 'high', 'medium', 'low'
     recommended_action = Column(Text)
-    generated_at = Column(DateTime, default=datetime.utcnow)
+    generated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     model_version = Column(String)
 
 class CustomWeight(Base):
@@ -175,7 +175,7 @@ class CustomWeight(Base):
 
     block_name = Column(String, primary_key=True)
     weight = Column(Integer, default=25)
-    updated_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 
 class QAHistory(Base):
@@ -188,7 +188,7 @@ class QAHistory(Base):
     context_applications = Column(JSON)
     sources = Column(JSON)
     response_time_ms = Column(Integer)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     user_feedback = Column(String)  # 'helpful', 'not_helpful', null
 
 # Database engine and session
@@ -199,13 +199,6 @@ def init_db():
     """Initialize database and create all tables"""
     global engine, SessionLocal
 
-    # Diagnostic logging for Streamlit Cloud
-    db_exists = os.path.exists(DATABASE_PATH)
-    db_size = os.path.getsize(DATABASE_PATH) if db_exists else 0
-    print(f"[DB_INIT] DATABASE_PATH = {DATABASE_PATH}")
-    print(f"[DB_INIT] File exists = {db_exists}, Size = {db_size} bytes")
-    print(f"[DB_INIT] __file__ = {os.path.abspath(__file__)}")
-
     # Ensure data directory exists
     os.makedirs(os.path.dirname(DATABASE_PATH), exist_ok=True)
 
@@ -214,16 +207,6 @@ def init_db():
 
     # Create all tables
     Base.metadata.create_all(engine)
-
-    # Check if data was loaded
-    try:
-        from sqlalchemy import text
-        with engine.connect() as conn:
-            result = conn.execute(text("SELECT COUNT(*) FROM applications"))
-            count = result.scalar()
-            print(f"[DB_INIT] Applications in DB: {count}")
-    except Exception as e:
-        print(f"[DB_INIT] Error checking data: {e}")
 
     # Create session factory
     SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

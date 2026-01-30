@@ -3297,18 +3297,15 @@ def page_calculator():
                     st.success("All subcategories have been cleared!")
                     st.rerun()
 
-            # Use data_editor for inline editing
-            st.markdown("""
-            **💡 How to use:**
-            1. **Subcategory**: Select from dropdown based on the application's Decision
-            2. **Quick Win**: Check if this is a quick opportunity (optional)
-            3. **Priority**: Will be calculated automatically when selecting Subcategory + Quick Win
+            # Reference: Subcategory options per Decision
+            st.markdown('<div style="background:#F9FAFB;padding:1rem 1.25rem;border-radius:8px;border:1px solid #E5E7EB;margin-bottom:1rem;"><p style="color:#374151;font-weight:700;font-size:0.85rem;margin:0 0 0.5rem 0;">Subcategory Options by Decision:</p><div style="display:flex;gap:1.5rem;flex-wrap:wrap;"><div><span style="color:#10B981;font-weight:600;font-size:0.8rem;">EVOLVE:</span><span style="color:#6B7280;font-size:0.8rem;"> Migrate, Enhance, Refactor, Upgrade</span></div><div><span style="color:#F59E0B;font-weight:600;font-size:0.8rem;">INVEST:</span><span style="color:#6B7280;font-size:0.8rem;"> Absorb, Modernize</span></div><div><span style="color:#3B82F6;font-weight:600;font-size:0.8rem;">MAINTAIN:</span><span style="color:#6B7280;font-size:0.8rem;"> Internalize, Maintain</span></div><div><span style="color:#EF4444;font-weight:600;font-size:0.8rem;">ELIMINATE:</span><span style="color:#6B7280;font-size:0.8rem;"> Replace, Retire, Absorbed</span></div></div></div>', unsafe_allow_html=True)
 
-            *Changes are saved automatically when editing.*
+            st.markdown("""
+            **💡 How to use:** Select a **Subcategory** matching the application's Decision (see reference above). **Quick Win** elevates P2/P3 priorities. **Priority** is calculated automatically. *Changes are saved automatically.*
             """)
 
             # All subcategory options in a single list (with empty for clearing)
-            all_sub_options = [''] + list(set([opt for opts in SUBCATEGORY_OPTIONS.values() for opt in opts]))
+            all_sub_options = ['', 'Absorb', 'Absorbed', 'Enhance', 'Internalize', 'Maintain', 'Migrate', 'Modernize', 'Refactor', 'Replace', 'Retire', 'Upgrade']
 
             column_config = {
                 'app_id': None,
@@ -3353,6 +3350,15 @@ def page_calculator():
                         app = session.query(Application).filter_by(id=app_id).first()
                         if app:
                             subcategory_val = row['Subcategory'] if row['Subcategory'] else None
+                            decision = row['Decision']
+
+                            # Validate subcategory matches decision
+                            if subcategory_val and decision in SUBCATEGORY_OPTIONS:
+                                valid_options = SUBCATEGORY_OPTIONS[decision]
+                                if subcategory_val not in valid_options:
+                                    st.error(f"**{row['Application']}**: '{subcategory_val}' is not valid for {decision}. Valid options: {', '.join(valid_options)}")
+                                    continue
+
                             app.subcategory = subcategory_val
                             app.quick_win = bool(row['Quick Win'])
 
@@ -3376,12 +3382,36 @@ def page_calculator():
             # Export to CSV
             export_df = edited_df.drop(columns=['app_id'])
             csv = export_df.to_csv(index=False)
-            st.download_button(
-                label="📥 Download Calculator (CSV)",
-                data=csv,
-                file_name=f"avangrid_calculator_{datetime.now().strftime('%Y%m%d')}.csv",
-                mime="text/csv"
-            )
+
+            col_csv, col_ppt = st.columns(2)
+            with col_csv:
+                st.download_button(
+                    label="📥 Download Calculator (CSV)",
+                    data=csv,
+                    file_name=f"avangrid_calculator_{datetime.now().strftime('%Y%m%d')}.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
+            with col_ppt:
+                if st.button("📊 Generate Portfolio PowerPoint", use_container_width=True, type="primary"):
+                    with st.spinner("Generating PowerPoint with all application cards..."):
+                        from ppt_generator import generate_portfolio_pptx
+                        pptx_bytes = generate_portfolio_pptx()
+                        if pptx_bytes:
+                            st.session_state['pptx_data'] = pptx_bytes
+                            st.session_state['pptx_ready'] = True
+                            st.rerun()
+                        else:
+                            st.error("No application data available to generate PowerPoint.")
+
+                if st.session_state.get('pptx_ready'):
+                    st.download_button(
+                        label="⬇️ Download Portfolio PPTX",
+                        data=st.session_state['pptx_data'],
+                        file_name=f"Avangrid_Portfolio_{datetime.now().strftime('%Y%m%d')}.pptx",
+                        mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                        use_container_width=True
+                    )
         else:
             st.warning("No applications with approved scores found.")
 

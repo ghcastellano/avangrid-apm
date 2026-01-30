@@ -1,0 +1,54 @@
+# Environment variables
+.env
+
+# Database
+*.db
+data/*.db
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Virtual Environment
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+.claude/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Temporary files
+temp_*
+*.tmp
+
+# Large Excel files (data files, not code)
+*.xlsx
+
+# Streamlit
+.streamlit/
+
+# Old generator scripts
+generate_*.py
+verify_*.py
+extract_*.py
+test_*.py
+
+# Misc
+~$*

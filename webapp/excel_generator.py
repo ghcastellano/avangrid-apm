@@ -6,8 +6,10 @@ and individual application sheets.
 """
 
 import io
+import os
 import re
-from openpyxl import Workbook
+from copy import copy
+from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.chart import ScatterChart, Reference, Series
 from openpyxl.chart.label import DataLabelList
@@ -19,6 +21,8 @@ from database import (
     get_session, close_session,
     Application, QuestionnaireAnswer, TranscriptAnswer, DavidNote, SynergyScore
 )
+
+EXCEL_TEMPLATE_PATH = os.path.join(os.path.dirname(__file__), "template_excel.xlsx")
 
 # ============================================================
 # Constants
@@ -727,6 +731,103 @@ def build_app_sheet(wb, app_data, session):
 # Main generation function
 # ============================================================
 
+def copy_template_sheet(wb, source_ws, tab_name, position):
+    """Copy a sheet from the template workbook preserving styles, merges, and dimensions."""
+    target_ws = wb.create_sheet(tab_name, position)
+
+    # Copy all cells and styles
+    for row in source_ws.iter_rows():
+        for cell in row:
+            target_cell = target_ws[cell.coordinate]
+            target_cell.value = cell.value
+            if cell.has_style:
+                target_cell.font = copy(cell.font)
+                target_cell.border = copy(cell.border)
+                target_cell.fill = copy(cell.fill)
+                target_cell.number_format = copy(cell.number_format)
+                target_cell.protection = copy(cell.protection)
+                target_cell.alignment = copy(cell.alignment)
+
+    # Copy merged cells
+    for merged_range in source_ws.merged_cells.ranges:
+        target_ws.merge_cells(str(merged_range))
+
+    # Copy column dimensions
+    for col_letter, col_dim in source_ws.column_dimensions.items():
+        target_ws.column_dimensions[col_letter].width = col_dim.width
+
+    # Copy row dimensions
+    for row_num, row_dim in source_ws.row_dimensions.items():
+        target_ws.row_dimensions[row_num].height = row_dim.height
+
+    # Copy images
+    try:
+        if hasattr(source_ws, '_images') and source_ws._images:
+            from openpyxl.drawing.image import Image as XLImage
+            for img in source_ws._images:
+                new_image = XLImage(img.ref)
+                if hasattr(img, 'anchor'):
+                    new_image.anchor = img.anchor
+                target_ws.add_image(new_image)
+    except Exception:
+        pass  # Images may fail in some environments
+
+    return target_ws
+
+
+def populate_index_sheet(ws, apps_data):
+    """Update the Index sheet with dynamic hyperlinks to all generated sheets."""
+    # Find the last populated row
+    last_row = ws.max_row
+
+    # Clear old content after row 5 (keep header/title rows)
+    for row in range(6, last_row + 1):
+        for col in range(1, 4):
+            ws.cell(row=row, column=col).value = None
+            ws.cell(row=row, column=col).hyperlink = None
+
+    row = 6
+
+    # Section: Generated Tabs
+    cell = ws.cell(row=row, column=1, value="Generated Tabs:")
+    cell.font = Font(name='Calibri', size=12, bold=True, color='333333')
+    row += 1
+
+    generated_tabs = ['Calculator', 'Dashboard', 'Strategic Roadmap', 'Application Groups', 'Value Chain']
+    for tab in generated_tabs:
+        cell = ws.cell(row=row, column=1, value=tab)
+        cell.font = Font(name='Calibri', size=10, color='0066CC', underline='single')
+        cell.hyperlink = f"#'{tab}'!A1"
+        row += 1
+
+    row += 1
+
+    # Section: Application Assessments
+    cell = ws.cell(row=row, column=1, value="Application Assessments:")
+    cell.font = Font(name='Calibri', size=12, bold=True, color='333333')
+    row += 1
+
+    for app in apps_data:
+        sheet_name = sanitize_sheet_name(app['name'])
+        rec = app.get('recommendation', '')
+        rec_colors = REC_COLORS.get(rec, {'fill': 'FFFFFF', 'font': '000000'})
+
+        cell = ws.cell(row=row, column=1, value=app['name'])
+        cell.font = Font(name='Calibri', size=10, color='0066CC', underline='single')
+        cell.hyperlink = f"#'{sheet_name}'!A1"
+
+        # Recommendation badge
+        cell_rec = ws.cell(row=row, column=2, value=rec)
+        cell_rec.font = Font(name='Calibri', size=9, bold=True, color=rec_colors['font'])
+        cell_rec.fill = PatternFill(start_color=rec_colors['fill'], end_color=rec_colors['fill'], fill_type='solid')
+
+        # Priority
+        cell_prio = ws.cell(row=row, column=3, value=app.get('priority', ''))
+        cell_prio.font = Font(name='Calibri', size=9)
+
+        row += 1
+
+
 def generate_portfolio_excel(custom_weights=None):
     """Generate the full portfolio Excel workbook.
     Returns bytes of the generated .xlsx file."""
@@ -758,7 +859,6 @@ def generate_portfolio_excel(custom_weights=None):
                 priority_map = {m[1]: m[2] for m in MATRIX_CONFIG if m[0] == rec}
                 base_priority = priority_map.get(app.subcategory, '')
                 if not base_priority:
-                    # Fallback: check all matrix entries
                     for decision, subcat, prio, rat in MATRIX_CONFIG:
                         if subcat == app.subcategory:
                             base_priority = prio
@@ -792,19 +892,33 @@ def generate_portfolio_excel(custom_weights=None):
 
         # Create workbook
         wb = Workbook()
-        # Remove default sheet
         wb.remove(wb.active)
 
-        # Build sheets
+        # 1. Copy Index, Introduction, Methodology from template
+        try:
+            wb_template = load_workbook(EXCEL_TEMPLATE_PATH)
+            template_tabs = [("Index", 0), ("Introduction", 1), ("Methodology", 2)]
+            for tab_name, position in template_tabs:
+                if tab_name in wb_template.sheetnames:
+                    copy_template_sheet(wb, wb_template[tab_name], tab_name, position)
+            wb_template.close()
+        except Exception:
+            pass  # Template may not exist in all environments
+
+        # 2. Build data sheets
         build_calculator_sheet(wb, apps_data, custom_weights or {b: SYNERGY_BLOCKS[b]['Weight'] for b in SYNERGY_BLOCKS})
         build_dashboard_sheet(wb, apps_data)
         build_roadmap_sheet(wb, apps_data)
         build_app_groups_sheet(wb, apps_data)
         build_value_chain_sheet(wb, apps_data)
 
-        # Individual app sheets
+        # 3. Individual app sheets
         for app in apps_data:
             build_app_sheet(wb, app, session)
+
+        # 4. Update Index with dynamic hyperlinks
+        if "Index" in wb.sheetnames:
+            populate_index_sheet(wb["Index"], apps_data)
 
         # Save to bytes
         buffer = io.BytesIO()

@@ -26,21 +26,25 @@ else:
 
 def _ensure_writable_db():
     """On Streamlit Cloud the git-cloned repo is read-only.
-    If the database file is not writable, copy it to /tmp and use that copy."""
+    SQLite needs write access to both the DB file AND its directory (for journal).
+    If the directory is not writable, copy the DB to /tmp."""
     global DATABASE_PATH
 
     if not os.path.exists(DATABASE_PATH):
         return  # Nothing to copy; init_db will create a new one
 
-    # Quick writability check: try opening for append
+    # Test actual write capability on the directory (SQLite needs this for journal files)
+    db_dir = os.path.dirname(DATABASE_PATH)
+    test_file = os.path.join(db_dir, ".write_test")
     try:
-        with open(DATABASE_PATH, 'a'):
-            pass
-        return  # File is writable, nothing to do
+        with open(test_file, 'w') as f:
+            f.write('test')
+        os.remove(test_file)
+        return  # Directory is writable
     except OSError:
         pass
 
-    # Database is read-only - copy to writable location
+    # Database directory is read-only - copy to writable location
     writable_path = os.path.join("/tmp", "avangrid_apm.db")
     if not os.path.exists(writable_path) or \
        os.path.getsize(writable_path) != os.path.getsize(DATABASE_PATH):

@@ -4632,3 +4632,30 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+    # Temporary diagnostic for Streamlit Cloud debugging
+    with st.expander("🔧 Database Diagnostic (temporary)"):
+        import database as _db_mod
+        _db_path = _db_mod.DATABASE_PATH
+        _db_exists = os.path.exists(_db_path)
+        _db_size = os.path.getsize(_db_path) if _db_exists else 0
+        st.code(f"""DATABASE_PATH: {_db_path}
+File exists: {_db_exists}
+File size: {_db_size} bytes
+__file__ (database.py): {os.path.abspath(_db_mod.__file__)}
+CWD: {os.getcwd()}""")
+        try:
+            _diag_session = get_session()
+            _app_count = _diag_session.query(Application).count()
+            close_session(_diag_session)
+            st.code(f"Applications in DB: {_app_count}")
+        except Exception as _e:
+            st.error(f"DB query error: {_e}")
+
+        # Check if committed db file exists
+        _repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        _committed_db = os.path.join(_repo_root, "webapp", "data", "avangrid.db")
+        st.code(f"""Repo root: {_repo_root}
+Committed DB path: {_committed_db}
+Committed DB exists: {os.path.exists(_committed_db)}
+Committed DB size: {os.path.getsize(_committed_db) if os.path.exists(_committed_db) else 0}""")

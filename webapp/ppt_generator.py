@@ -390,34 +390,32 @@ def fill_slide(slide, data_map):
 
 
 # ============================================================
-# Slide cloning for multi-slide generation
+# Slide cloning with preserved relationship IDs
 # ============================================================
 
-def clone_slide(prs, source_slide_idx=0):
-    """Clone a slide by deep-copying all shape elements from the source slide."""
-    source = prs.slides[source_slide_idx]
-    layout = source.slide_layout
-    new_slide = prs.slides.add_slide(layout)
+def _copy_rels_with_rids(source_slide, new_slide, rids_needed):
+    """Copy relationships from source to new slide, preserving exact rIds.
+    This is critical: shape XML references rIds like rId5, rId6 etc.
+    If the new slide has different rIds, images/embeds won't load."""
+    import re as _re
 
-    # Remove default shapes added by layout
-    for shape in list(new_slide.shapes):
-        new_slide.shapes._spTree.remove(shape.element)
-
-    # Copy all child elements from source spTree that are shapes
-    shape_tags = (
-        '{http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing}',
-    )
-    for child in source.shapes._spTree:
-        tag_local = child.tag.split('}')[-1] if '}' in child.tag else child.tag
-        if tag_local in ('sp', 'pic', 'grpSp', 'graphicFrame', 'cxnSp'):
-            new_slide.shapes._spTree.append(deepcopy(child))
-
-    # Copy image relationships from source slide to new slide
-    for rel_key, rel in source.part.rels.items():
-        if "image" in rel.reltype:
-            new_slide.part.rels.get_or_add(rel.reltype, rel.target_part)
-
-    return new_slide
+    for rId, rel in source_slide.part.rels.items():
+        if rId not in rids_needed:
+            continue
+        # Skip slideLayout rel (already set by add_slide)
+        if 'slideLayout' in rel.reltype:
+            continue
+        try:
+            target = rel.target_part
+            if target is None:
+                continue
+            # Check if this rId already exists on new slide
+            if rId in new_slide.part.rels:
+                continue
+            # Add relationship preserving the exact rId
+            new_slide.part.rels._rels[rId] = rel
+        except Exception:
+            pass
 
 
 # ============================================================
@@ -427,6 +425,8 @@ def clone_slide(prs, source_slide_idx=0):
 def generate_portfolio_pptx():
     """Generate a single PPTX with one slide per application.
     Returns bytes of the generated PPTX file."""
+    import re as _re
+    from lxml import etree
 
     session = get_session()
     try:
@@ -458,14 +458,9 @@ def generate_portfolio_pptx():
             if tag_local in ('sp', 'pic', 'grpSp', 'graphicFrame', 'cxnSp'):
                 original_shapes.append(deepcopy(child))
 
-        # Also save image relationships
-        image_rels = []
-        for rel_key, rel in template_slide.part.rels.items():
-            try:
-                if "image" in rel.reltype and rel.target_part is not None:
-                    image_rels.append((rel.reltype, rel.target_part))
-            except Exception:
-                pass
+        # Discover which rIds are referenced by shape XML
+        shapes_xml = etree.tostring(template_slide.shapes._spTree, encoding='unicode')
+        referenced_rids = set(_re.findall(r'r:(?:embed|link|id)="(rId\d+)"', shapes_xml))
 
         # Fill first slide with first application
         try:
@@ -487,12 +482,8 @@ def generate_portfolio_pptx():
                 for shape_elem in original_shapes:
                     new_slide.shapes._spTree.append(deepcopy(shape_elem))
 
-                # Copy image relationships safely
-                for reltype, target_part in image_rels:
-                    try:
-                        new_slide.part.rels.get_or_add(reltype, target_part)
-                    except Exception as rel_err:
-                        print(f"[PPT_GENERATOR] Warning: could not copy image rel for slide {i}: {rel_err}")
+                # Copy ALL referenced relationships preserving exact rIds
+                _copy_rels_with_rids(template_slide, new_slide, referenced_rids)
 
                 # Fill with application data
                 fill_slide(new_slide, apps_data[i])

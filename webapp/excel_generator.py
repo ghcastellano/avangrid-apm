@@ -291,315 +291,250 @@ def build_calculator_sheet(wb, apps_data, custom_weights):
     return ws
 
 
-def _compute_label_offsets(apps_data):
-    """Compute optimal label offsets for each app to minimize text collisions.
-    Uses 8 directions (t, tr, r, br, b, bl, l, tl) with ManualLayout offsets.
-    Returns dict of {app_name: (offset_x, offset_y)} in chart fraction units."""
+def _compute_matplotlib_label_positions(apps_data):
+    """Compute optimal label positions for matplotlib scatter chart.
+    Uses greedy placement with 16 offset directions, prioritizing crowded points.
+    Returns list of (dx, dy, ha, va) offsets in data units for each app (same order as input)."""
     import math
 
-    # 12 possible directions with (dx, dy) offsets in chart fraction units
-    # Large offsets push labels far from data points to avoid collisions
-    DIRECTIONS = [
-        ('t',   ( 0.000, -0.080)),
-        ('tr',  ( 0.070, -0.060)),
-        ('r',   ( 0.090,  0.000)),
-        ('br',  ( 0.070,  0.060)),
-        ('b',   ( 0.000,  0.080)),
-        ('bl',  (-0.070,  0.060)),
-        ('l',   (-0.090,  0.000)),
-        ('tl',  (-0.070, -0.060)),
-        # Extra far positions for very crowded areas
-        ('tf',  ( 0.000, -0.130)),
-        ('rf',  ( 0.140,  0.000)),
-        ('bf',  ( 0.000,  0.130)),
-        ('lf',  (-0.140,  0.000)),
+    # 16 possible offset directions: (dx, dy, horizontal_align, vertical_align)
+    # in data-coordinate units (chart range 0-100)
+    OFFSETS = [
+        ( 2.0,  2.0, 'left',   'bottom'),   # top-right
+        ( 2.0, -2.0, 'left',   'top'),       # bottom-right
+        (-2.0,  2.0, 'right',  'bottom'),    # top-left
+        (-2.0, -2.0, 'right',  'top'),       # bottom-left
+        ( 3.0,  0.0, 'left',   'center'),    # right
+        (-3.0,  0.0, 'right',  'center'),    # left
+        ( 0.0,  3.0, 'center', 'bottom'),    # top
+        ( 0.0, -3.0, 'center', 'top'),       # bottom
+        ( 4.0,  3.5, 'left',   'bottom'),    # far top-right
+        ( 4.0, -3.5, 'left',   'top'),       # far bottom-right
+        (-4.0,  3.5, 'right',  'bottom'),    # far top-left
+        (-4.0, -3.5, 'right',  'top'),       # far bottom-left
+        ( 6.0,  1.0, 'left',   'center'),    # far right
+        (-6.0,  1.0, 'right',  'center'),    # far left
+        ( 0.0,  5.0, 'center', 'bottom'),    # far top
+        ( 0.0, -5.0, 'center', 'top'),       # far bottom
     ]
 
-    coords = [(app['thi'], app['bvi'], app['name'], len(app['name'])) for app in apps_data]
+    coords = [(app['thi'], app['bvi'], app['name']) for app in apps_data]
 
-    # Sort by density (most crowded points first) so they get priority
+    # Sort by density (most crowded points first get priority)
     neighbor_counts = []
-    for i, (x1, y1, _, _) in enumerate(coords):
-        count = sum(1 for j, (x2, y2, _, _) in enumerate(coords)
+    for i, (x1, y1, _) in enumerate(coords):
+        count = sum(1 for j, (x2, y2, _) in enumerate(coords)
                     if i != j and math.hypot(x2 - x1, y2 - y1) < 12)
         neighbor_counts.append(count)
     order = sorted(range(len(coords)), key=lambda i: -neighbor_counts[i])
 
-    offsets = {}  # name -> (offset_x, offset_y)
-    # Track placed labels as bounding boxes: list of (x1, y1, x2, y2) in 0-100 coords
-    placed_rects = []
+    positions = [None] * len(coords)
+    placed_bboxes = []  # list of (x1, y1, x2, y2) in data coords
 
-    # Label dimensions in chart units (0-100 scale), scaled by name length
-    CHAR_W = 0.65  # width per character in chart units
-    LABEL_H = 4.0  # label height in chart units
+    # Label dimensions in data units (for ~22x16 inch figure, 0-100 range)
+    CHAR_W = 0.32   # width per character in data units
+    LABEL_H = 2.0   # label height in data units
+    PAD = 0.3       # padding around label
 
-    def label_rect(px, py, dir_name, name_len):
-        """Return bounding box for a label at (px, py) with offset direction."""
-        # Find direction offset
-        for dn, (dx, dy) in DIRECTIONS:
-            if dn == dir_name:
-                # Convert chart fraction offsets to chart units (0-100)
-                lx = px + dx * 100
-                ly = py - dy * 100  # y is inverted (up = negative offset, higher chart value)
-                w = name_len * CHAR_W
-                return (lx - w / 2, ly - LABEL_H / 2, lx + w / 2, ly + LABEL_H / 2)
-        return (px, py, px, py)
+    def get_bbox(lx, ly, ha, name):
+        w = len(name) * CHAR_W
+        h = LABEL_H
+        if ha == 'left':
+            return (lx - PAD, ly - h / 2 - PAD, lx + w + PAD, ly + h / 2 + PAD)
+        elif ha == 'right':
+            return (lx - w - PAD, ly - h / 2 - PAD, lx + PAD, ly + h / 2 + PAD)
+        else:  # center
+            return (lx - w / 2 - PAD, ly - h / 2 - PAD, lx + w / 2 + PAD, ly + h / 2 + PAD)
 
-    def rects_overlap(r1, r2):
-        """Check if two rectangles overlap (with small margin)."""
-        margin = 0.5
-        return not (r1[2] + margin <= r2[0] or r2[2] + margin <= r1[0] or
-                    r1[3] + margin <= r2[1] or r2[3] + margin <= r1[1])
-
-    def score_direction(px, py, dir_name, name_len):
-        """Score a direction: lower is better. Considers overlaps, proximity, and boundaries."""
-        rect = label_rect(px, py, dir_name, name_len)
-        cx = (rect[0] + rect[2]) / 2
-        cy = (rect[1] + rect[3]) / 2
+    def score_placement(bbox):
         score = 0
-        # Penalize overlaps with already-placed labels (heavy penalty)
-        for pr in placed_rects:
-            if rects_overlap(rect, pr):
-                score += 20
+        cx = (bbox[0] + bbox[2]) / 2
+        cy = (bbox[1] + bbox[3]) / 2
+        # Overlap with already-placed labels
+        for pb in placed_bboxes:
+            dx = min(bbox[2], pb[2]) - max(bbox[0], pb[0])
+            dy = min(bbox[3], pb[3]) - max(bbox[1], pb[1])
+            if dx > 0 and dy > 0:
+                score += dx * dy * 10  # heavy penalty for overlap area
             else:
-                # Penalize proximity (labels that are close but not overlapping)
-                pcx = (pr[0] + pr[2]) / 2
-                pcy = (pr[1] + pr[3]) / 2
+                # Proximity penalty
+                pcx = (pb[0] + pb[2]) / 2
+                pcy = (pb[1] + pb[3]) / 2
                 dist = math.hypot(cx - pcx, cy - pcy)
-                if dist < 8:
-                    score += 5
-                elif dist < 12:
-                    score += 2
-        # Penalize labels that go out of bounds (0-100)
-        if rect[0] < 0:
-            score += 8
-        if rect[2] > 100:
-            score += 8
-        if rect[1] < 0:
-            score += 8
-        if rect[3] > 100:
-            score += 8
-        # Penalize overlap with data points (markers)
-        for j, (ox, oy, _, _) in enumerate(coords):
-            if rect[0] <= ox <= rect[2] and rect[1] <= oy <= rect[3]:
-                score += 5
+                if dist < 5:
+                    score += 3
+                elif dist < 8:
+                    score += 1
+        # Boundary penalty
+        if bbox[0] < -2: score += 6
+        if bbox[2] > 102: score += 6
+        if bbox[1] < -2: score += 6
+        if bbox[3] > 102: score += 6
+        # Overlap with data points (markers)
+        for x, y, _ in coords:
+            if bbox[0] <= x <= bbox[2] and bbox[1] <= y <= bbox[3]:
+                score += 4
         return score
 
     for idx in order:
-        x, y, name, name_len = coords[idx]
-        best_dir = 't'
+        x, y, name = coords[idx]
         best_score = float('inf')
-        for dir_name, (dx, dy) in DIRECTIONS:
-            s = score_direction(x, y, dir_name, name_len)
+        best_pos = OFFSETS[0]
+        best_bbox = None
+
+        for dx, dy, ha, va in OFFSETS:
+            lx = x + dx
+            ly = y + dy
+            bbox = get_bbox(lx, ly, ha, name)
+            s = score_placement(bbox)
             if s < best_score:
                 best_score = s
-                best_dir = dir_name
+                best_pos = (dx, dy, ha, va)
+                best_bbox = bbox
                 if s == 0:
                     break
 
-        # Find the offset for the best direction
-        for dn, (dx, dy) in DIRECTIONS:
-            if dn == best_dir:
-                offsets[name] = (dx, dy)
-                break
+        positions[idx] = best_pos
+        if best_bbox:
+            placed_bboxes.append(best_bbox)
 
-        # Record the placed label bounding box
-        rect = label_rect(x, y, best_dir, name_len)
-        placed_rects.append(rect)
-
-    return offsets
+    return positions
 
 
 def build_dashboard_sheet(wb, apps_data):
-    """Build the Dashboard sheet with scatter chart matching the Streamlit app's chart.
-    Features: app name labels on dots, no side legend, dashed gray lines at 60,60,
-    grid numbers, large colored quadrant labels (EVOLVE/INVEST/MAINTAIN/ELIMINATE),
-    white background with light gray gridlines."""
+    """Build the Dashboard sheet with a matplotlib-rendered scatter chart image.
+    Uses matplotlib for pixel-perfect label positioning with leader lines.
+    Features: app name labels on dots (no collisions), dashed threshold lines at 60/60,
+    quadrant labels (EVOLVE/INVEST/MAINTAIN/ELIMINATE), color-coded markers."""
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as mpatches
+    from io import BytesIO
+    from openpyxl.drawing.image import Image as XlImage
+
     ws = wb.create_sheet("Dashboard")
 
-    # Data table for chart (hidden reference area)
-    ws.cell(row=1, column=1, value="Application").font = Font(name='Calibri', size=9, color='999999')
-    ws.cell(row=1, column=2, value="THI").font = Font(name='Calibri', size=9, color='999999')
-    ws.cell(row=1, column=3, value="BVI").font = Font(name='Calibri', size=9, color='999999')
-    ws.cell(row=1, column=4, value="Recommendation").font = Font(name='Calibri', size=9, color='999999')
+    # ── Data table for reference (columns A-D) ──
+    headers = [("Application", 35), ("THI", 10), ("BVI", 10), ("Recommendation", 18)]
+    for col, (hdr, width) in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=col, value=hdr)
+        cell.font = HEADER_FONT
+        cell.fill = HEADER_FILL_DARK
+        cell.border = THIN_BORDER
+        cell.alignment = Alignment(horizontal='center')
+        ws.column_dimensions[get_column_letter(col)].width = width
 
     for i, app in enumerate(apps_data, start=2):
-        ws.cell(row=i, column=1, value=app['name'])
-        ws.cell(row=i, column=2, value=app['thi'])
-        ws.cell(row=i, column=3, value=app['bvi'])
-        ws.cell(row=i, column=4, value=app['recommendation'])
+        cell = ws.cell(row=i, column=1, value=app['name'])
+        cell.font = CONTENT_FONT
+        cell.border = THIN_BORDER
 
-    n = len(apps_data)
-    aux_start = n + 4
+        cell = ws.cell(row=i, column=2, value=app['thi'])
+        cell.font = CONTENT_FONT
+        cell.border = THIN_BORDER
+        cell.number_format = '0.0'
+        cell.alignment = Alignment(horizontal='center')
 
-    # Quadrant label data points (invisible markers, visible text labels)
-    quadrant_labels = [
-        ("EVOLVE", 80, 80),
-        ("INVEST", 30, 80),
-        ("MAINTAIN", 80, 30),
-        ("ELIMINATE", 30, 30),
-    ]
-    for i, (name, x, y) in enumerate(quadrant_labels):
-        row = aux_start + i
-        ws.cell(row=row, column=1, value=name)
-        ws.cell(row=row, column=2, value=x)
-        ws.cell(row=row, column=3, value=y)
+        cell = ws.cell(row=i, column=3, value=app['bvi'])
+        cell.font = CONTENT_FONT
+        cell.border = THIN_BORDER
+        cell.number_format = '0.0'
+        cell.alignment = Alignment(horizontal='center')
 
-    # Create scatter chart - large size to give labels room
-    chart = ScatterChart()
-    chart.title = "Application Portfolio - Strategic Positioning"
-    chart.x_axis.title = "Technical Health Index (THI)"
-    chart.y_axis.title = "Business Value Index (BVI)"
-    chart.x_axis.scaling.min = 0
-    chart.x_axis.scaling.max = 100
-    chart.y_axis.scaling.min = 0
-    chart.y_axis.scaling.max = 100
-    chart.width = 45
-    chart.height = 30
-    chart.style = 2
+        rec = app['recommendation']
+        rec_colors = REC_COLORS.get(rec, {'fill': 'FFFFFF', 'font': '000000'})
+        cell = ws.cell(row=i, column=4, value=rec)
+        cell.font = Font(name='Calibri', size=10, bold=True, color=rec_colors['font'])
+        cell.fill = PatternFill(start_color=rec_colors['fill'], end_color=rec_colors['fill'], fill_type='solid')
+        cell.border = THIN_BORDER
+        cell.alignment = Alignment(horizontal='center')
 
-    # Remove legend (app names shown directly on dots)
-    chart.legend = None
-
-    # Explicitly show axes
-    chart.x_axis.delete = False
-    chart.y_axis.delete = False
-
-    # Axis tick marks and labels at edges (low = bottom/left)
-    chart.x_axis.majorUnit = 20
-    chart.y_axis.majorUnit = 20
-    chart.x_axis.tickLblPos = 'low'
-    chart.y_axis.tickLblPos = 'low'
-
-    # Light gray major gridlines (matching Streamlit's gridcolor='lightgray')
-    from openpyxl.chart.shapes import GraphicalProperties
-    from openpyxl.drawing.line import LineProperties
-
-    grid_line_props = GraphicalProperties()
-    grid_line_props.ln = LineProperties(solidFill='D3D3D3', w=6350)  # light gray, 0.5pt
-    chart.x_axis.majorGridlines = ChartLines(spPr=grid_line_props)
-
-    grid_line_props2 = GraphicalProperties()
-    grid_line_props2.ln = LineProperties(solidFill='D3D3D3', w=6350)
-    chart.y_axis.majorGridlines = ChartLines(spPr=grid_line_props2)
-
-    # Number format for axis labels
-    chart.x_axis.numFmt = '0'
-    chart.y_axis.numFmt = '0'
-
-    # Axes at min (0) - labels and tick marks at the edges
-    chart.x_axis.crosses = 'min'
-    chart.y_axis.crosses = 'min'
-
-    # Marker colors matching Streamlit: EVOLVE=#10B981, INVEST=#F59E0B, MAINTAIN=#3B82F6, ELIMINATE=#EF4444
-    marker_colors = {
-        'EVOLVE': '10B981',
-        'INVEST': 'F59E0B',
-        'MAINTAIN': '3B82F6',
-        'ELIMINATE': 'EF4444',
+    # ── Generate matplotlib chart ──
+    marker_colors_plt = {
+        'EVOLVE': '#10B981',
+        'INVEST': '#F59E0B',
+        'MAINTAIN': '#3B82F6',
+        'ELIMINATE': '#EF4444',
     }
 
-    # Pre-compute optimal label offsets to avoid collisions (8 directions)
-    from openpyxl.chart.label import DataLabel
-    from openpyxl.chart.layout import Layout, ManualLayout
-    from openpyxl.chart.text import RichText
-    from openpyxl.drawing.text import Paragraph, ParagraphProperties, CharacterProperties
+    fig, ax = plt.subplots(figsize=(22, 16))
+    fig.patch.set_facecolor('white')
+    ax.set_facecolor('white')
+    ax.set_xlim(-3, 103)
+    ax.set_ylim(-3, 103)
+    ax.set_xticks(range(0, 101, 20))
+    ax.set_yticks(range(0, 101, 20))
+    ax.grid(True, color='#D3D3D3', linewidth=0.5)
+    ax.set_axisbelow(True)
 
-    label_offsets = _compute_label_offsets(apps_data)
+    # Dashed threshold lines at 60,60
+    ax.axhline(y=60, color='#808080', linestyle='--', linewidth=1.5, alpha=0.7, zorder=2)
+    ax.axvline(x=60, color='#808080', linestyle='--', linewidth=1.5, alpha=0.7, zorder=2)
 
-    # Small font for data labels (6pt, dark gray)
-    label_font = CharacterProperties(sz=600, solidFill='444444')
-    label_txPr = RichText(
-        p=[Paragraph(
-            pPr=ParagraphProperties(defRPr=label_font),
-            endParaRPr=label_font
-        )]
-    )
+    # Quadrant labels (large, faded, positioned in quadrant centers)
+    ax.text(80, 88, 'EVOLVE', fontsize=22, fontweight='bold', ha='center', va='center',
+            color='#10B981', alpha=0.25, zorder=1)
+    ax.text(30, 88, 'INVEST', fontsize=22, fontweight='bold', ha='center', va='center',
+            color='#F59E0B', alpha=0.25, zorder=1)
+    ax.text(80, 12, 'MAINTAIN', fontsize=22, fontweight='bold', ha='center', va='center',
+            color='#3B82F6', alpha=0.25, zorder=1)
+    ax.text(30, 12, 'ELIMINATE', fontsize=22, fontweight='bold', ha='center', va='center',
+            color='#EF4444', alpha=0.25, zorder=1)
 
-    # Add each app as individual series with name label
+    # Axis labels and title
+    ax.set_xlabel('Technical Health Index (THI)', fontsize=14, labelpad=10)
+    ax.set_ylabel('Business Value Index (BVI)', fontsize=14, labelpad=10)
+    ax.set_title('Application Portfolio \u2013 Strategic Positioning',
+                 fontsize=16, fontweight='bold', pad=15)
+
+    # Plot scatter points
+    for app in apps_data:
+        color = marker_colors_plt.get(app['recommendation'], '#999999')
+        ax.scatter(app['thi'], app['bvi'], c=color, s=90, zorder=5,
+                   edgecolors='white', linewidth=0.5)
+
+    # Compute optimal label positions (greedy, no-collision)
+    positions = _compute_matplotlib_label_positions(apps_data)
+
+    # Draw labels with thin leader lines
     for i, app in enumerate(apps_data):
-        row = i + 2
-        rec = app['recommendation']
-        x_vals = Reference(ws, min_col=2, min_row=row, max_row=row)
-        y_vals = Reference(ws, min_col=3, min_row=row, max_row=row)
-        series = Series(y_vals, x_vals, title=app['name'])
-        series.marker = Marker(symbol='circle', size=7)
-        color = marker_colors.get(rec, '999999')
-        series.marker.graphicalProperties.solidFill = color
-        series.graphicalProperties.line.noFill = True
+        dx, dy, ha, va = positions[i]
+        ax.annotate(
+            app['name'],
+            xy=(app['thi'], app['bvi']),
+            xytext=(app['thi'] + dx, app['bvi'] + dy),
+            fontsize=7,
+            color='#333333',
+            ha=ha, va=va,
+            arrowprops=dict(arrowstyle='-', color='#BBBBBB', linewidth=0.5,
+                            shrinkA=0, shrinkB=2),
+            zorder=10,
+        )
 
-        # Show app name as data label with precise offset positioning
-        series.dLbls = DataLabelList()
-        series.dLbls.showSerName = True
-        series.dLbls.showVal = False
-        series.dLbls.showCatName = False
-        series.dLbls.showPercent = False
-        series.dLbls.showLegendKey = False
-        series.dLbls.txPr = label_txPr
+    # Color legend
+    legend_elements = [
+        mpatches.Patch(facecolor='#10B981', edgecolor='#CCCCCC', label='EVOLVE'),
+        mpatches.Patch(facecolor='#F59E0B', edgecolor='#CCCCCC', label='INVEST'),
+        mpatches.Patch(facecolor='#3B82F6', edgecolor='#CCCCCC', label='MAINTAIN'),
+        mpatches.Patch(facecolor='#EF4444', edgecolor='#CCCCCC', label='ELIMINATE'),
+    ]
+    ax.legend(handles=legend_elements, loc='lower right', fontsize=11,
+              framealpha=0.9, edgecolor='#CCCCCC')
 
-        # Apply computed ManualLayout offset for this label
-        offset_x, offset_y = label_offsets.get(app['name'], (0.0, -0.04))
-        dl = DataLabel(idx=0)
-        dl.layout = Layout(manualLayout=ManualLayout(x=offset_x, y=offset_y))
-        dl.showSerName = True
-        dl.showVal = False
-        dl.showCatName = False
-        series.dLbls.dLbl = [dl]
+    plt.tight_layout()
 
-        chart.series.append(series)
+    # Render to PNG at high DPI
+    img_buf = BytesIO()
+    fig.savefig(img_buf, format='png', dpi=120, bbox_inches='tight', facecolor='white')
+    plt.close(fig)
+    img_buf.seek(0)
 
-    # Add quadrant name labels as invisible data points with text
-    for i, (name, x, y) in enumerate(quadrant_labels):
-        row = aux_start + i
-        x_ref = Reference(ws, min_col=2, min_row=row, max_row=row)
-        y_ref = Reference(ws, min_col=3, min_row=row, max_row=row)
-        s = Series(y_ref, x_ref, title=name)
-        s.marker = Marker(symbol='none')
-        s.graphicalProperties.line.noFill = True
-        s.dLbls = DataLabelList()
-        s.dLbls.showSerName = True
-        s.dLbls.showVal = False
-        s.dLbls.showCatName = False
-        s.dLbls.showPercent = False
-        s.dLbls.showLegendKey = False
-        chart.series.append(s)
-
-    # Dashed gray threshold lines at 60,60 (matching Streamlit's hline/vline)
-    line_start = aux_start + len(quadrant_labels)
-
-    # Horizontal dashed line at BVI=60
-    ws.cell(row=line_start, column=2, value=0)
-    ws.cell(row=line_start, column=3, value=60)
-    ws.cell(row=line_start + 1, column=2, value=100)
-    ws.cell(row=line_start + 1, column=3, value=60)
-
-    h_x = Reference(ws, min_col=2, min_row=line_start, max_row=line_start + 1)
-    h_y = Reference(ws, min_col=3, min_row=line_start, max_row=line_start + 1)
-    h_series = Series(h_y, h_x, title=None)
-    h_series.graphicalProperties.line.solidFill = '808080'
-    h_series.graphicalProperties.line.dashStyle = 'dash'
-    h_series.graphicalProperties.line.width = 19050  # 1.5pt
-    h_series.marker = Marker(symbol='none')
-    chart.series.append(h_series)
-
-    # Vertical dashed line at THI=60
-    ws.cell(row=line_start + 2, column=2, value=60)
-    ws.cell(row=line_start + 2, column=3, value=0)
-    ws.cell(row=line_start + 3, column=2, value=60)
-    ws.cell(row=line_start + 3, column=3, value=100)
-
-    v_x = Reference(ws, min_col=2, min_row=line_start + 2, max_row=line_start + 3)
-    v_y = Reference(ws, min_col=3, min_row=line_start + 2, max_row=line_start + 3)
-    v_series = Series(v_y, v_x, title=None)
-    v_series.graphicalProperties.line.solidFill = '808080'
-    v_series.graphicalProperties.line.dashStyle = 'dash'
-    v_series.graphicalProperties.line.width = 19050  # 1.5pt
-    v_series.marker = Marker(symbol='none')
-    chart.series.append(v_series)
-
-    # Place chart below data
-    chart_row = line_start + 6
-    ws.add_chart(chart, "A" + str(chart_row))
+    # Insert chart image to the right of the data table (column F)
+    xl_img = XlImage(img_buf)
+    xl_img.width = 1700   # ~17.7 inches at 96 DPI
+    xl_img.height = 1200   # ~12.5 inches at 96 DPI
+    ws.add_image(xl_img, "F1")
 
     return ws
 

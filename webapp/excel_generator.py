@@ -291,6 +291,77 @@ def build_calculator_sheet(wb, apps_data, custom_weights):
     return ws
 
 
+def _compute_label_positions(apps_data):
+    """Compute optimal label positions ('t','b','l','r') for each app to minimize
+    text collisions on the scatter chart. Uses a greedy algorithm that considers
+    nearby neighbors and already-assigned label positions."""
+    import math
+
+    coords = [(app['thi'], app['bvi'], app['name']) for app in apps_data]
+    # Sort by density (most crowded points first) so they get priority in placement
+    neighbor_counts = []
+    for i, (x1, y1, _) in enumerate(coords):
+        count = sum(1 for j, (x2, y2, _) in enumerate(coords)
+                    if i != j and math.hypot(x2 - x1, y2 - y1) < 15)
+        neighbor_counts.append(count)
+    order = sorted(range(len(coords)), key=lambda i: -neighbor_counts[i])
+
+    positions = {}  # name -> 't'/'b'/'l'/'r'
+    # Track occupied label regions: list of (lx, ly, direction)
+    placed = []
+
+    # Label approximate dimensions in chart units (0-100 scale)
+    # Horizontal labels (~15 chars avg) are wider than tall
+    LABEL_W = 12  # width in x-units
+    LABEL_H = 5   # height in y-units
+
+    def label_rect(px, py, direction):
+        """Return (x1, y1, x2, y2) bounding box for a label placed at (px,py)."""
+        if direction == 't':
+            return (px - LABEL_W / 2, py + 1, px + LABEL_W / 2, py + 1 + LABEL_H)
+        elif direction == 'b':
+            return (px - LABEL_W / 2, py - 1 - LABEL_H, px + LABEL_W / 2, py - 1)
+        elif direction == 'r':
+            return (px + 2, py - LABEL_H / 2, px + 2 + LABEL_W, py + LABEL_H / 2)
+        else:  # 'l'
+            return (px - 2 - LABEL_W, py - LABEL_H / 2, px - 2, py + LABEL_H / 2)
+
+    def rects_overlap(r1, r2):
+        """Check if two rectangles overlap."""
+        return not (r1[2] <= r2[0] or r2[2] <= r1[0] or r1[3] <= r2[1] or r2[3] <= r1[1])
+
+    def count_overlaps(px, py, direction):
+        """Count how many already-placed labels this position would overlap."""
+        rect = label_rect(px, py, direction)
+        overlaps = 0
+        for (ox, oy, odir) in placed:
+            other_rect = label_rect(ox, oy, odir)
+            if rects_overlap(rect, other_rect):
+                overlaps += 1
+        # Also penalize labels that go out of bounds (0-100)
+        if rect[0] < 0 or rect[2] > 100 or rect[1] < 0 or rect[3] > 100:
+            overlaps += 2
+        return overlaps
+
+    for idx in order:
+        x, y, name = coords[idx]
+        # Try all 4 directions, pick the one with fewest overlaps
+        candidates = ['t', 'r', 'b', 'l']
+        best_dir = 't'
+        best_overlaps = float('inf')
+        for d in candidates:
+            ov = count_overlaps(x, y, d)
+            if ov < best_overlaps:
+                best_overlaps = ov
+                best_dir = d
+                if ov == 0:
+                    break  # perfect placement found
+        positions[name] = best_dir
+        placed.append((x, y, best_dir))
+
+    return positions
+
+
 def build_dashboard_sheet(wb, apps_data):
     """Build the Dashboard sheet with scatter chart matching the Streamlit app's chart.
     Features: app name labels on dots, no side legend, dashed gray lines at 60,60,
@@ -380,6 +451,10 @@ def build_dashboard_sheet(wb, apps_data):
         'ELIMINATE': 'EF4444',
     }
 
+    # Pre-compute optimal label positions to avoid collisions
+    # For each point, find the direction with most clearance from neighbors
+    label_positions = _compute_label_positions(apps_data)
+
     # Add each app as individual series with name label
     for i, app in enumerate(apps_data):
         row = i + 2
@@ -392,13 +467,14 @@ def build_dashboard_sheet(wb, apps_data):
         series.marker.graphicalProperties.solidFill = color
         series.graphicalProperties.line.noFill = True
 
-        # Show app name as data label
+        # Show app name as data label with smart positioning
         series.dLbls = DataLabelList()
         series.dLbls.showSerName = True
         series.dLbls.showVal = False
         series.dLbls.showCatName = False
         series.dLbls.showPercent = False
         series.dLbls.showLegendKey = False
+        series.dLbls.dLblPos = label_positions.get(app['name'], 't')
 
         chart.series.append(series)
 

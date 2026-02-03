@@ -297,17 +297,22 @@ def _compute_label_offsets(apps_data):
     Returns dict of {app_name: (offset_x, offset_y)} in chart fraction units."""
     import math
 
-    # 8 possible directions with (dx, dy) offsets in chart fraction units
-    # These push labels away from the data point in the given direction
+    # 12 possible directions with (dx, dy) offsets in chart fraction units
+    # Large offsets push labels far from data points to avoid collisions
     DIRECTIONS = [
-        ('t',  ( 0.000, -0.045)),
-        ('tr', ( 0.040, -0.035)),
-        ('r',  ( 0.050,  0.000)),
-        ('br', ( 0.040,  0.035)),
-        ('b',  ( 0.000,  0.045)),
-        ('bl', (-0.040,  0.035)),
-        ('l',  (-0.050,  0.000)),
-        ('tl', (-0.040, -0.035)),
+        ('t',   ( 0.000, -0.080)),
+        ('tr',  ( 0.070, -0.060)),
+        ('r',   ( 0.090,  0.000)),
+        ('br',  ( 0.070,  0.060)),
+        ('b',   ( 0.000,  0.080)),
+        ('bl',  (-0.070,  0.060)),
+        ('l',   (-0.090,  0.000)),
+        ('tl',  (-0.070, -0.060)),
+        # Extra far positions for very crowded areas
+        ('tf',  ( 0.000, -0.130)),
+        ('rf',  ( 0.140,  0.000)),
+        ('bf',  ( 0.000,  0.130)),
+        ('lf',  (-0.140,  0.000)),
     ]
 
     coords = [(app['thi'], app['bvi'], app['name'], len(app['name'])) for app in apps_data]
@@ -325,8 +330,8 @@ def _compute_label_offsets(apps_data):
     placed_rects = []
 
     # Label dimensions in chart units (0-100 scale), scaled by name length
-    CHAR_W = 0.55  # width per character in chart units
-    LABEL_H = 3.0  # label height in chart units
+    CHAR_W = 0.65  # width per character in chart units
+    LABEL_H = 4.0  # label height in chart units
 
     def label_rect(px, py, dir_name, name_len):
         """Return bounding box for a label at (px, py) with offset direction."""
@@ -347,26 +352,37 @@ def _compute_label_offsets(apps_data):
                     r1[3] + margin <= r2[1] or r2[3] + margin <= r1[1])
 
     def score_direction(px, py, dir_name, name_len):
-        """Score a direction: lower is better. Considers overlaps and boundary penalties."""
+        """Score a direction: lower is better. Considers overlaps, proximity, and boundaries."""
         rect = label_rect(px, py, dir_name, name_len)
+        cx = (rect[0] + rect[2]) / 2
+        cy = (rect[1] + rect[3]) / 2
         score = 0
-        # Penalize overlaps with already-placed labels
+        # Penalize overlaps with already-placed labels (heavy penalty)
         for pr in placed_rects:
             if rects_overlap(rect, pr):
-                score += 10
+                score += 20
+            else:
+                # Penalize proximity (labels that are close but not overlapping)
+                pcx = (pr[0] + pr[2]) / 2
+                pcy = (pr[1] + pr[3]) / 2
+                dist = math.hypot(cx - pcx, cy - pcy)
+                if dist < 8:
+                    score += 5
+                elif dist < 12:
+                    score += 2
         # Penalize labels that go out of bounds (0-100)
         if rect[0] < 0:
-            score += 5
+            score += 8
         if rect[2] > 100:
-            score += 5
+            score += 8
         if rect[1] < 0:
-            score += 5
+            score += 8
         if rect[3] > 100:
-            score += 5
+            score += 8
         # Penalize overlap with data points (markers)
         for j, (ox, oy, _, _) in enumerate(coords):
             if rect[0] <= ox <= rect[2] and rect[1] <= oy <= rect[3]:
-                score += 3
+                score += 5
         return score
 
     for idx in order:
@@ -491,8 +507,8 @@ def build_dashboard_sheet(wb, apps_data):
 
     label_offsets = _compute_label_offsets(apps_data)
 
-    # Small font for data labels (7pt, dark gray)
-    label_font = CharacterProperties(sz=700, solidFill='444444')
+    # Small font for data labels (6pt, dark gray)
+    label_font = CharacterProperties(sz=600, solidFill='444444')
     label_txPr = RichText(
         p=[Paragraph(
             pPr=ParagraphProperties(defRPr=label_font),

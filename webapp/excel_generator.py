@@ -291,75 +291,107 @@ def build_calculator_sheet(wb, apps_data, custom_weights):
     return ws
 
 
-def _compute_label_positions(apps_data):
-    """Compute optimal label positions ('t','b','l','r') for each app to minimize
-    text collisions on the scatter chart. Uses a greedy algorithm that considers
-    nearby neighbors and already-assigned label positions."""
+def _compute_label_offsets(apps_data):
+    """Compute optimal label offsets for each app to minimize text collisions.
+    Uses 8 directions (t, tr, r, br, b, bl, l, tl) with ManualLayout offsets.
+    Returns dict of {app_name: (offset_x, offset_y)} in chart fraction units."""
     import math
 
-    coords = [(app['thi'], app['bvi'], app['name']) for app in apps_data]
-    # Sort by density (most crowded points first) so they get priority in placement
+    # 8 possible directions with (dx, dy) offsets in chart fraction units
+    # These push labels away from the data point in the given direction
+    DIRECTIONS = [
+        ('t',  ( 0.000, -0.045)),
+        ('tr', ( 0.040, -0.035)),
+        ('r',  ( 0.050,  0.000)),
+        ('br', ( 0.040,  0.035)),
+        ('b',  ( 0.000,  0.045)),
+        ('bl', (-0.040,  0.035)),
+        ('l',  (-0.050,  0.000)),
+        ('tl', (-0.040, -0.035)),
+    ]
+
+    coords = [(app['thi'], app['bvi'], app['name'], len(app['name'])) for app in apps_data]
+
+    # Sort by density (most crowded points first) so they get priority
     neighbor_counts = []
-    for i, (x1, y1, _) in enumerate(coords):
-        count = sum(1 for j, (x2, y2, _) in enumerate(coords)
-                    if i != j and math.hypot(x2 - x1, y2 - y1) < 15)
+    for i, (x1, y1, _, _) in enumerate(coords):
+        count = sum(1 for j, (x2, y2, _, _) in enumerate(coords)
+                    if i != j and math.hypot(x2 - x1, y2 - y1) < 12)
         neighbor_counts.append(count)
     order = sorted(range(len(coords)), key=lambda i: -neighbor_counts[i])
 
-    positions = {}  # name -> 't'/'b'/'l'/'r'
-    # Track occupied label regions: list of (lx, ly, direction)
-    placed = []
+    offsets = {}  # name -> (offset_x, offset_y)
+    # Track placed labels as bounding boxes: list of (x1, y1, x2, y2) in 0-100 coords
+    placed_rects = []
 
-    # Label approximate dimensions in chart units (0-100 scale)
-    # Horizontal labels (~15 chars avg) are wider than tall
-    LABEL_W = 12  # width in x-units
-    LABEL_H = 5   # height in y-units
+    # Label dimensions in chart units (0-100 scale), scaled by name length
+    CHAR_W = 0.55  # width per character in chart units
+    LABEL_H = 3.0  # label height in chart units
 
-    def label_rect(px, py, direction):
-        """Return (x1, y1, x2, y2) bounding box for a label placed at (px,py)."""
-        if direction == 't':
-            return (px - LABEL_W / 2, py + 1, px + LABEL_W / 2, py + 1 + LABEL_H)
-        elif direction == 'b':
-            return (px - LABEL_W / 2, py - 1 - LABEL_H, px + LABEL_W / 2, py - 1)
-        elif direction == 'r':
-            return (px + 2, py - LABEL_H / 2, px + 2 + LABEL_W, py + LABEL_H / 2)
-        else:  # 'l'
-            return (px - 2 - LABEL_W, py - LABEL_H / 2, px - 2, py + LABEL_H / 2)
+    def label_rect(px, py, dir_name, name_len):
+        """Return bounding box for a label at (px, py) with offset direction."""
+        # Find direction offset
+        for dn, (dx, dy) in DIRECTIONS:
+            if dn == dir_name:
+                # Convert chart fraction offsets to chart units (0-100)
+                lx = px + dx * 100
+                ly = py - dy * 100  # y is inverted (up = negative offset, higher chart value)
+                w = name_len * CHAR_W
+                return (lx - w / 2, ly - LABEL_H / 2, lx + w / 2, ly + LABEL_H / 2)
+        return (px, py, px, py)
 
     def rects_overlap(r1, r2):
-        """Check if two rectangles overlap."""
-        return not (r1[2] <= r2[0] or r2[2] <= r1[0] or r1[3] <= r2[1] or r2[3] <= r1[1])
+        """Check if two rectangles overlap (with small margin)."""
+        margin = 0.5
+        return not (r1[2] + margin <= r2[0] or r2[2] + margin <= r1[0] or
+                    r1[3] + margin <= r2[1] or r2[3] + margin <= r1[1])
 
-    def count_overlaps(px, py, direction):
-        """Count how many already-placed labels this position would overlap."""
-        rect = label_rect(px, py, direction)
-        overlaps = 0
-        for (ox, oy, odir) in placed:
-            other_rect = label_rect(ox, oy, odir)
-            if rects_overlap(rect, other_rect):
-                overlaps += 1
-        # Also penalize labels that go out of bounds (0-100)
-        if rect[0] < 0 or rect[2] > 100 or rect[1] < 0 or rect[3] > 100:
-            overlaps += 2
-        return overlaps
+    def score_direction(px, py, dir_name, name_len):
+        """Score a direction: lower is better. Considers overlaps and boundary penalties."""
+        rect = label_rect(px, py, dir_name, name_len)
+        score = 0
+        # Penalize overlaps with already-placed labels
+        for pr in placed_rects:
+            if rects_overlap(rect, pr):
+                score += 10
+        # Penalize labels that go out of bounds (0-100)
+        if rect[0] < 0:
+            score += 5
+        if rect[2] > 100:
+            score += 5
+        if rect[1] < 0:
+            score += 5
+        if rect[3] > 100:
+            score += 5
+        # Penalize overlap with data points (markers)
+        for j, (ox, oy, _, _) in enumerate(coords):
+            if rect[0] <= ox <= rect[2] and rect[1] <= oy <= rect[3]:
+                score += 3
+        return score
 
     for idx in order:
-        x, y, name = coords[idx]
-        # Try all 4 directions, pick the one with fewest overlaps
-        candidates = ['t', 'r', 'b', 'l']
+        x, y, name, name_len = coords[idx]
         best_dir = 't'
-        best_overlaps = float('inf')
-        for d in candidates:
-            ov = count_overlaps(x, y, d)
-            if ov < best_overlaps:
-                best_overlaps = ov
-                best_dir = d
-                if ov == 0:
-                    break  # perfect placement found
-        positions[name] = best_dir
-        placed.append((x, y, best_dir))
+        best_score = float('inf')
+        for dir_name, (dx, dy) in DIRECTIONS:
+            s = score_direction(x, y, dir_name, name_len)
+            if s < best_score:
+                best_score = s
+                best_dir = dir_name
+                if s == 0:
+                    break
 
-    return positions
+        # Find the offset for the best direction
+        for dn, (dx, dy) in DIRECTIONS:
+            if dn == best_dir:
+                offsets[name] = (dx, dy)
+                break
+
+        # Record the placed label bounding box
+        rect = label_rect(x, y, best_dir, name_len)
+        placed_rects.append(rect)
+
+    return offsets
 
 
 def build_dashboard_sheet(wb, apps_data):
@@ -397,7 +429,7 @@ def build_dashboard_sheet(wb, apps_data):
         ws.cell(row=row, column=2, value=x)
         ws.cell(row=row, column=3, value=y)
 
-    # Create scatter chart
+    # Create scatter chart - large size to give labels room
     chart = ScatterChart()
     chart.title = "Application Portfolio - Strategic Positioning"
     chart.x_axis.title = "Technical Health Index (THI)"
@@ -406,8 +438,8 @@ def build_dashboard_sheet(wb, apps_data):
     chart.x_axis.scaling.max = 100
     chart.y_axis.scaling.min = 0
     chart.y_axis.scaling.max = 100
-    chart.width = 35
-    chart.height = 22
+    chart.width = 45
+    chart.height = 30
     chart.style = 2
 
     # Remove legend (app names shown directly on dots)
@@ -451,9 +483,22 @@ def build_dashboard_sheet(wb, apps_data):
         'ELIMINATE': 'EF4444',
     }
 
-    # Pre-compute optimal label positions to avoid collisions
-    # For each point, find the direction with most clearance from neighbors
-    label_positions = _compute_label_positions(apps_data)
+    # Pre-compute optimal label offsets to avoid collisions (8 directions)
+    from openpyxl.chart.label import DataLabel
+    from openpyxl.chart.layout import Layout, ManualLayout
+    from openpyxl.chart.text import RichText
+    from openpyxl.drawing.text import Paragraph, ParagraphProperties, CharacterProperties
+
+    label_offsets = _compute_label_offsets(apps_data)
+
+    # Small font for data labels (7pt, dark gray)
+    label_font = CharacterProperties(sz=700, solidFill='444444')
+    label_txPr = RichText(
+        p=[Paragraph(
+            pPr=ParagraphProperties(defRPr=label_font),
+            endParaRPr=label_font
+        )]
+    )
 
     # Add each app as individual series with name label
     for i, app in enumerate(apps_data):
@@ -462,19 +507,28 @@ def build_dashboard_sheet(wb, apps_data):
         x_vals = Reference(ws, min_col=2, min_row=row, max_row=row)
         y_vals = Reference(ws, min_col=3, min_row=row, max_row=row)
         series = Series(y_vals, x_vals, title=app['name'])
-        series.marker = Marker(symbol='circle', size=8)
+        series.marker = Marker(symbol='circle', size=7)
         color = marker_colors.get(rec, '999999')
         series.marker.graphicalProperties.solidFill = color
         series.graphicalProperties.line.noFill = True
 
-        # Show app name as data label with smart positioning
+        # Show app name as data label with precise offset positioning
         series.dLbls = DataLabelList()
         series.dLbls.showSerName = True
         series.dLbls.showVal = False
         series.dLbls.showCatName = False
         series.dLbls.showPercent = False
         series.dLbls.showLegendKey = False
-        series.dLbls.dLblPos = label_positions.get(app['name'], 't')
+        series.dLbls.txPr = label_txPr
+
+        # Apply computed ManualLayout offset for this label
+        offset_x, offset_y = label_offsets.get(app['name'], (0.0, -0.04))
+        dl = DataLabel(idx=0)
+        dl.layout = Layout(manualLayout=ManualLayout(x=offset_x, y=offset_y))
+        dl.showSerName = True
+        dl.showVal = False
+        dl.showCatName = False
+        series.dLbls.dLbl = [dl]
 
         chart.series.append(series)
 

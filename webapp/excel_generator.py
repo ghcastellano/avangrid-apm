@@ -15,6 +15,7 @@ from openpyxl.chart import ScatterChart, Reference, Series
 from openpyxl.chart.label import DataLabelList
 from openpyxl.chart.marker import Marker
 from openpyxl.chart.series import DataPoint
+from openpyxl.chart.axis import ChartLines
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
 from database import (
@@ -191,7 +192,7 @@ def categorize_value_chain(app_name, qa_texts):
 
 def build_calculator_sheet(wb, apps_data, custom_weights):
     """Build the Calculator sheet with scores, BVI, THI, and recommendations."""
-    ws = wb.create_sheet("Calculator", 0)
+    ws = wb.create_sheet("Calculator")
     blocks = list(SYNERGY_BLOCKS.keys())
 
     # Column widths
@@ -291,10 +292,13 @@ def build_calculator_sheet(wb, apps_data, custom_weights):
 
 
 def build_dashboard_sheet(wb, apps_data):
-    """Build the Dashboard sheet with scatter chart."""
+    """Build the Dashboard sheet with scatter chart matching the Streamlit app's chart.
+    Features: app name labels on dots, no side legend, dashed gray lines at 60,60,
+    grid numbers, large colored quadrant labels (EVOLVE/INVEST/MAINTAIN/ELIMINATE),
+    white background with light gray gridlines."""
     ws = wb.create_sheet("Dashboard")
 
-    # Data table for chart (hidden reference)
+    # Data table for chart (hidden reference area)
     ws.cell(row=1, column=1, value="Application").font = Font(name='Calibri', size=9, color='999999')
     ws.cell(row=1, column=2, value="THI").font = Font(name='Calibri', size=9, color='999999')
     ws.cell(row=1, column=3, value="BVI").font = Font(name='Calibri', size=9, color='999999')
@@ -307,19 +311,20 @@ def build_dashboard_sheet(wb, apps_data):
         ws.cell(row=i, column=4, value=app['recommendation'])
 
     n = len(apps_data)
+    aux_start = n + 4
 
-    # Quadrant reference lines
-    line_start = n + 4
-    ws.cell(row=line_start, column=1, value="H-Line")
-    ws.cell(row=line_start, column=2, value=0)
-    ws.cell(row=line_start, column=3, value=60)
-    ws.cell(row=line_start + 1, column=2, value=100)
-    ws.cell(row=line_start + 1, column=3, value=60)
-    ws.cell(row=line_start + 2, column=1, value="V-Line")
-    ws.cell(row=line_start + 2, column=2, value=60)
-    ws.cell(row=line_start + 2, column=3, value=0)
-    ws.cell(row=line_start + 3, column=2, value=60)
-    ws.cell(row=line_start + 3, column=3, value=100)
+    # Quadrant label data points (invisible markers, visible text labels)
+    quadrant_labels = [
+        ("EVOLVE", 80, 80),
+        ("INVEST", 30, 80),
+        ("MAINTAIN", 80, 30),
+        ("ELIMINATE", 30, 30),
+    ]
+    for i, (name, x, y) in enumerate(quadrant_labels):
+        row = aux_start + i
+        ws.cell(row=row, column=1, value=name)
+        ws.cell(row=row, column=2, value=x)
+        ws.cell(row=row, column=3, value=y)
 
     # Create scatter chart
     chart = ScatterChart()
@@ -334,60 +339,121 @@ def build_dashboard_sheet(wb, apps_data):
     chart.height = 22
     chart.style = 2
 
-    # Group apps by recommendation for coloring
-    rec_groups = {}
-    for i, app in enumerate(apps_data):
-        rec = app['recommendation']
-        if rec not in rec_groups:
-            rec_groups[rec] = []
-        rec_groups[rec].append(i + 2)  # row number (1-indexed, header at 1)
+    # Remove legend (app names shown directly on dots)
+    chart.legend = None
 
+    # Explicitly show axes
+    chart.x_axis.delete = False
+    chart.y_axis.delete = False
+
+    # Axis tick marks and labels at edges (low = bottom/left)
+    chart.x_axis.majorUnit = 20
+    chart.y_axis.majorUnit = 20
+    chart.x_axis.tickLblPos = 'low'
+    chart.y_axis.tickLblPos = 'low'
+
+    # Light gray major gridlines (matching Streamlit's gridcolor='lightgray')
+    from openpyxl.chart.shapes import GraphicalProperties
+    from openpyxl.drawing.line import LineProperties
+
+    grid_line_props = GraphicalProperties()
+    grid_line_props.ln = LineProperties(solidFill='D3D3D3', w=6350)  # light gray, 0.5pt
+    chart.x_axis.majorGridlines = ChartLines(spPr=grid_line_props)
+
+    grid_line_props2 = GraphicalProperties()
+    grid_line_props2.ln = LineProperties(solidFill='D3D3D3', w=6350)
+    chart.y_axis.majorGridlines = ChartLines(spPr=grid_line_props2)
+
+    # Number format for axis labels
+    chart.x_axis.numFmt = '0'
+    chart.y_axis.numFmt = '0'
+
+    # Axes at min (0) - labels and tick marks at the edges
+    chart.x_axis.crosses = 'min'
+    chart.y_axis.crosses = 'min'
+
+    # Marker colors matching Streamlit: EVOLVE=#10B981, INVEST=#F59E0B, MAINTAIN=#3B82F6, ELIMINATE=#EF4444
     marker_colors = {
-        'EVOLVE': '00B050',
-        'INVEST': 'FFC000',
-        'MAINTAIN': '4472C4',
-        'ELIMINATE': 'FF0000',
+        'EVOLVE': '10B981',
+        'INVEST': 'F59E0B',
+        'MAINTAIN': '3B82F6',
+        'ELIMINATE': 'EF4444',
     }
 
-    for rec, rows in rec_groups.items():
-        for row in rows:
-            x_vals = Reference(ws, min_col=2, min_row=row, max_row=row)
-            y_vals = Reference(ws, min_col=3, min_row=row, max_row=row)
-            series = Series(y_vals, x_vals, title=ws.cell(row=row, column=1).value)
-            series.marker = Marker(symbol='circle', size=8)
-            color = marker_colors.get(rec, '999999')
-            series.marker.graphicalProperties.solidFill = color
-            series.graphicalProperties.line.noFill = True
-            chart.series.append(series)
+    # Add each app as individual series with name label
+    for i, app in enumerate(apps_data):
+        row = i + 2
+        rec = app['recommendation']
+        x_vals = Reference(ws, min_col=2, min_row=row, max_row=row)
+        y_vals = Reference(ws, min_col=3, min_row=row, max_row=row)
+        series = Series(y_vals, x_vals, title=app['name'])
+        series.marker = Marker(symbol='circle', size=8)
+        color = marker_colors.get(rec, '999999')
+        series.marker.graphicalProperties.solidFill = color
+        series.graphicalProperties.line.noFill = True
 
-    # Horizontal reference line at BVI=60
+        # Show app name as data label
+        series.dLbls = DataLabelList()
+        series.dLbls.showSerName = True
+        series.dLbls.showVal = False
+        series.dLbls.showCatName = False
+        series.dLbls.showPercent = False
+        series.dLbls.showLegendKey = False
+
+        chart.series.append(series)
+
+    # Add quadrant name labels as invisible data points with text
+    for i, (name, x, y) in enumerate(quadrant_labels):
+        row = aux_start + i
+        x_ref = Reference(ws, min_col=2, min_row=row, max_row=row)
+        y_ref = Reference(ws, min_col=3, min_row=row, max_row=row)
+        s = Series(y_ref, x_ref, title=name)
+        s.marker = Marker(symbol='none')
+        s.graphicalProperties.line.noFill = True
+        s.dLbls = DataLabelList()
+        s.dLbls.showSerName = True
+        s.dLbls.showVal = False
+        s.dLbls.showCatName = False
+        s.dLbls.showPercent = False
+        s.dLbls.showLegendKey = False
+        chart.series.append(s)
+
+    # Dashed gray threshold lines at 60,60 (matching Streamlit's hline/vline)
+    line_start = aux_start + len(quadrant_labels)
+
+    # Horizontal dashed line at BVI=60
+    ws.cell(row=line_start, column=2, value=0)
+    ws.cell(row=line_start, column=3, value=60)
+    ws.cell(row=line_start + 1, column=2, value=100)
+    ws.cell(row=line_start + 1, column=3, value=60)
+
     h_x = Reference(ws, min_col=2, min_row=line_start, max_row=line_start + 1)
     h_y = Reference(ws, min_col=3, min_row=line_start, max_row=line_start + 1)
-    h_series = Series(h_y, h_x, title="Threshold")
-    h_series.graphicalProperties.line.solidFill = '000000'
+    h_series = Series(h_y, h_x, title=None)
+    h_series.graphicalProperties.line.solidFill = '808080'
     h_series.graphicalProperties.line.dashStyle = 'dash'
-    h_series.graphicalProperties.line.width = 15000
+    h_series.graphicalProperties.line.width = 19050  # 1.5pt
     h_series.marker = Marker(symbol='none')
     chart.series.append(h_series)
 
-    # Vertical reference line at THI=60
+    # Vertical dashed line at THI=60
+    ws.cell(row=line_start + 2, column=2, value=60)
+    ws.cell(row=line_start + 2, column=3, value=0)
+    ws.cell(row=line_start + 3, column=2, value=60)
+    ws.cell(row=line_start + 3, column=3, value=100)
+
     v_x = Reference(ws, min_col=2, min_row=line_start + 2, max_row=line_start + 3)
     v_y = Reference(ws, min_col=3, min_row=line_start + 2, max_row=line_start + 3)
     v_series = Series(v_y, v_x, title=None)
-    v_series.graphicalProperties.line.solidFill = '000000'
+    v_series.graphicalProperties.line.solidFill = '808080'
     v_series.graphicalProperties.line.dashStyle = 'dash'
-    v_series.graphicalProperties.line.width = 15000
+    v_series.graphicalProperties.line.width = 19050  # 1.5pt
     v_series.marker = Marker(symbol='none')
     chart.series.append(v_series)
 
-    ws.add_chart(chart, "A" + str(n + 8))
-
-    # Quadrant labels
-    ws.cell(row=n + 6, column=1, value="Legend:").font = Font(bold=True)
-    for idx, (rec, color_info) in enumerate(REC_COLORS.items()):
-        cell = ws.cell(row=n + 7 + idx, column=1, value=rec)
-        cell.fill = PatternFill(start_color=color_info['fill'], end_color=color_info['fill'], fill_type='solid')
-        cell.font = Font(name='Calibri', size=10, bold=True, color=color_info['font'])
+    # Place chart below data
+    chart_row = line_start + 6
+    ws.add_chart(chart, "A" + str(chart_row))
 
     return ws
 
@@ -538,11 +604,11 @@ def build_app_groups_sheet(wb, apps_data):
 
 
 def build_value_chain_sheet(wb, apps_data):
-    """Build the Value Chain sheet."""
+    """Build the Value Chain sheet with improved layout."""
     ws = wb.create_sheet("Value Chain")
 
     # Title
-    ws.merge_cells('B2:T2')
+    ws.merge_cells('B2:V2')
     cell = ws.cell(row=2, column=2, value="AVANGRID INTEGRATED UTILITY VALUE CHAIN")
     cell.font = Font(name='Calibri', size=14, bold=True, color='FFFFFF')
     cell.fill = PatternFill(start_color='000000', end_color='000000', fill_type='solid')
@@ -557,41 +623,51 @@ def build_value_chain_sheet(wb, apps_data):
         stage = categorize_value_chain(app['name'], qa_texts)
         stages[stage].append(app)
 
+    # Wider columns (5 cols per stage instead of 4) and more spacing
     stage_positions = [
         ('Generation (Renewables)', 4, 2),
-        ('Transmission (Transport)', 4, 7),
-        ('Distribution (Delivery)', 4, 12),
-        ('Customer Solutions', 4, 17),
-        ('Corporate / Shared Services', 20, 2),
-        ('Cross-Cutting', 20, 12),
+        ('Transmission (Transport)', 4, 8),
+        ('Distribution (Delivery)', 4, 14),
+        ('Customer Solutions', 4, 20),
+        ('Corporate / Shared Services', 22, 2),
+        ('Cross-Cutting', 22, 14),
     ]
+
+    span = 4  # columns per stage box
+
+    # Set column widths for stage areas
+    for col in range(2, 26):
+        ws.column_dimensions[get_column_letter(col)].width = 8
 
     for stage_name, start_row, start_col in stage_positions:
         color = VALUE_CHAIN_STAGES.get(stage_name, {}).get('color', '999999')
         apps_in_stage = stages.get(stage_name, [])
-        end_col = start_col + 3
+        end_col = start_col + span
 
         # Header
         ws.merge_cells(start_row=start_row, start_column=start_col, end_row=start_row, end_column=end_col)
-        cell = ws.cell(row=start_row, column=start_col, value=stage_name)
+        cell = ws.cell(row=start_row, column=start_col, value=f"{stage_name} ({len(apps_in_stage)})")
         cell.font = Font(name='Calibri', size=11, bold=True, color='FFFFFF')
         cell.fill = PatternFill(start_color=color, end_color=color, fill_type='solid')
         cell.alignment = Alignment(horizontal='center')
         cell.border = THIN_BORDER
 
-        for i, app in enumerate(apps_in_stage[:12]):
+        for i, app in enumerate(apps_in_stage[:15]):
             row = start_row + 1 + i
-            ws.merge_cells(start_row=row, start_column=start_col, end_row=row, end_column=end_col)
-            cell = ws.cell(row=row, column=start_col, value=app['name'])
-            cell.font = Font(name='Calibri', size=10)
             rec = app.get('recommendation', '')
-            rec_colors = REC_COLORS.get(rec, {'fill': 'F2F2F2'})
+            rec_colors = REC_COLORS.get(rec, {'fill': 'F2F2F2', 'font': '000000'})
+
+            # App name with BVI/THI
+            display = f"{app['name']}  ({app.get('bvi', 0):.0f}/{app.get('thi', 0):.0f})"
+            ws.merge_cells(start_row=row, start_column=start_col, end_row=row, end_column=end_col)
+            cell = ws.cell(row=row, column=start_col, value=display)
+            cell.font = Font(name='Calibri', size=9, color=rec_colors.get('font', '000000'))
             cell.fill = PatternFill(start_color=rec_colors['fill'], end_color=rec_colors['fill'], fill_type='solid')
             cell.border = THIN_BORDER
             cell.alignment = Alignment(horizontal='center')
 
-    # Arrows between stages (row 4)
-    for arrow_col in [6, 11, 16]:
+    # Arrows between top-row stages
+    for arrow_col in [7, 13, 19]:
         cell = ws.cell(row=4, column=arrow_col, value="\u27A1")
         cell.font = Font(name='Calibri', size=16)
         cell.alignment = Alignment(horizontal='center', vertical='center')
@@ -600,61 +676,142 @@ def build_value_chain_sheet(wb, apps_data):
 
 
 def build_app_sheet(wb, app_data, session):
-    """Build an individual application assessment sheet."""
+    """Build an individual application assessment sheet.
+    4-column layout: Question | Questionnaire Answer | Transcript Answer | David's Comments
+    Includes David's insights summary table near the scorecard."""
     sheet_name = sanitize_sheet_name(app_data['name'])
     ws = wb.create_sheet(sheet_name)
 
-    ws.column_dimensions['A'].width = 50
-    ws.column_dimensions['B'].width = 80
+    ws.column_dimensions['A'].width = 45
+    ws.column_dimensions['B'].width = 45
+    ws.column_dimensions['C'].width = 45
+    ws.column_dimensions['D'].width = 45
 
     # Title
-    ws.merge_cells('A1:B1')
+    ws.merge_cells('A1:D1')
     cell = ws.cell(row=1, column=1, value=f"Assessment: {app_data['name']}")
     cell.font = Font(name='Calibri', size=14, bold=True, color='E87722')
 
     # Scorecard header
+    ws.merge_cells('A3:B3')
     ws.cell(row=3, column=1, value="EXECUTIVE SCORECARD").font = HEADER_FONT
     ws['A3'].fill = HEADER_FILL_DARK
     ws['A3'].border = THIN_BORDER
-    ws.cell(row=3, column=2, value="SCORE (0-5)").font = HEADER_FONT
     ws['B3'].fill = HEADER_FILL_DARK
     ws['B3'].border = THIN_BORDER
+    ws.merge_cells('C3:D3')
+    ws.cell(row=3, column=3, value="SCORE (0-5)").font = HEADER_FONT
+    ws['C3'].fill = HEADER_FILL_DARK
+    ws['C3'].border = THIN_BORDER
+    ws['D3'].fill = HEADER_FILL_DARK
+    ws['D3'].border = THIN_BORDER
 
     # Score rows
     blocks = list(SYNERGY_BLOCKS.keys())
+    dv = DataValidation(type="whole", operator="between", formula1="0", formula2="5")
+    ws.add_data_validation(dv)
+
     for i, block in enumerate(blocks, start=4):
+        ws.merge_cells(start_row=i, start_column=1, end_row=i, end_column=2)
         cell_a = ws.cell(row=i, column=1, value=block)
         cell_a.font = Font(name='Calibri', size=10, bold=True)
         cell_a.fill = CONTENT_FILL
         cell_a.border = THIN_BORDER
         cell_a.alignment = Alignment(horizontal='right')
+        ws.cell(row=i, column=2).fill = CONTENT_FILL
+        ws.cell(row=i, column=2).border = THIN_BORDER
 
         score = app_data['scores'].get(block, 0)
-        cell_b = ws.cell(row=i, column=2, value=score)
+        ws.merge_cells(start_row=i, start_column=3, end_row=i, end_column=4)
+        cell_b = ws.cell(row=i, column=3, value=score)
         cell_b.font = Font(name='Calibri', size=11)
         cell_b.border = THIN_BORDER
         cell_b.alignment = Alignment(horizontal='center')
-        # Add dropdown validation
-        dv = DataValidation(type="whole", operator="between", formula1="0", formula2="5")
-        ws.add_data_validation(dv)
+        ws.cell(row=i, column=4).border = THIN_BORDER
         dv.add(cell_b)
 
-    # Detailed Q&A sections
-    current_row = 14
-
-    # Get all Q&A data from all sources
+    # Get all data sources
     qa_answers = session.query(QuestionnaireAnswer).filter_by(application_id=app_data['id']).all()
     ta_answers = session.query(TranscriptAnswer).filter_by(application_id=app_data['id']).all()
-    david_notes = session.query(DavidNote).filter_by(application_id=app_data['id'], note_type='answer').all()
+    david_notes_answers = session.query(DavidNote).filter_by(application_id=app_data['id'], note_type='answer').all()
+    david_notes_insights = session.query(DavidNote).filter_by(application_id=app_data['id'], note_type='insight').all()
+    all_david_notes = session.query(DavidNote).filter_by(application_id=app_data['id']).all()
 
-    # Build Q&A dict per block (merge all sources)
+    # Build lookup dicts by question text
+    qa_by_question = {}
+    for qa in qa_answers:
+        if qa.question_text:
+            qa_by_question[qa.question_text] = qa.answer_text or '-'
+
+    ta_by_question = {}
+    for ta in ta_answers:
+        if ta.question_text and ta.answer_text:
+            ta_by_question[ta.question_text] = ta.answer_text
+
+    dn_by_question = {}
+    for dn in david_notes_answers:
+        if dn.question_text and dn.answer_text:
+            dn_by_question[dn.question_text] = dn.answer_text
+
+    # ── David's Notes & Insights section (after scorecard) ──
+    current_row = 13
+
+    if all_david_notes:
+        ws.merge_cells(start_row=current_row, start_column=1, end_row=current_row, end_column=4)
+        cell = ws.cell(row=current_row, column=1, value="DAVID'S NOTES & INSIGHTS")
+        cell.font = Font(name='Calibri', size=11, bold=True, color='FFFFFF')
+        cell.fill = PatternFill(start_color='2F5496', end_color='2F5496', fill_type='solid')
+        cell.border = THIN_BORDER
+        for c in range(2, 5):
+            ws.cell(row=current_row, column=c).fill = PatternFill(start_color='2F5496', end_color='2F5496', fill_type='solid')
+            ws.cell(row=current_row, column=c).border = THIN_BORDER
+        current_row += 1
+
+        # Column headers
+        ws.cell(row=current_row, column=1, value="Topic").font = HEADER_FONT
+        ws['A' + str(current_row)].fill = HEADER_FILL_DARK
+        ws['A' + str(current_row)].border = THIN_BORDER
+        ws.merge_cells(start_row=current_row, start_column=2, end_row=current_row, end_column=4)
+        ws.cell(row=current_row, column=2, value="Insight / Comment").font = HEADER_FONT
+        ws['B' + str(current_row)].fill = HEADER_FILL_DARK
+        ws['B' + str(current_row)].border = THIN_BORDER
+        for c in range(3, 5):
+            ws.cell(row=current_row, column=c).fill = HEADER_FILL_DARK
+            ws.cell(row=current_row, column=c).border = THIN_BORDER
+        current_row += 1
+
+        for dn in all_david_notes:
+            topic = dn.question_text or ('General Insights' if dn.note_type == 'insight' else 'Note')
+            cell_topic = ws.cell(row=current_row, column=1, value=topic)
+            cell_topic.font = Font(name='Calibri', size=9, bold=True)
+            cell_topic.fill = CONTENT_FILL
+            cell_topic.border = THIN_BORDER
+            cell_topic.alignment = WRAP_ALIGN
+
+            ws.merge_cells(start_row=current_row, start_column=2, end_row=current_row, end_column=4)
+            cell_insight = ws.cell(row=current_row, column=2, value=dn.answer_text or '')
+            cell_insight.font = Font(name='Calibri', size=9)
+            cell_insight.fill = CONTENT_FILL
+            cell_insight.border = THIN_BORDER
+            cell_insight.alignment = WRAP_ALIGN
+            for c in range(3, 5):
+                ws.cell(row=current_row, column=c).fill = CONTENT_FILL
+                ws.cell(row=current_row, column=c).border = THIN_BORDER
+            current_row += 1
+
+        current_row += 1  # Blank separator
+
+    # ── Detailed Q&A sections per synergy block ──
     for block in blocks:
         # Block header
-        ws.merge_cells(start_row=current_row, start_column=1, end_row=current_row, end_column=2)
+        ws.merge_cells(start_row=current_row, start_column=1, end_row=current_row, end_column=4)
         cell = ws.cell(row=current_row, column=1, value=block.upper())
         cell.font = Font(name='Calibri', size=11, bold=True, color='FFFFFF')
         cell.fill = PatternFill(start_color='444444', end_color='444444', fill_type='solid')
         cell.border = THIN_BORDER
+        for c in range(2, 5):
+            ws.cell(row=current_row, column=c).fill = PatternFill(start_color='444444', end_color='444444', fill_type='solid')
+            ws.cell(row=current_row, column=c).border = THIN_BORDER
         current_row += 1
 
         # Definitions
@@ -669,40 +826,62 @@ def build_app_sheet(wb, app_data, session):
 
         current_row += 1
 
-        # Q&A header
-        ws.cell(row=current_row, column=1, value="Q").font = HEADER_FONT
-        ws['A' + str(current_row)].fill = HEADER_FILL_DARK
-        ws['A' + str(current_row)].border = THIN_BORDER
-        ws.cell(row=current_row, column=2, value="A").font = HEADER_FONT
-        ws['B' + str(current_row)].fill = HEADER_FILL_DARK
-        ws['B' + str(current_row)].border = THIN_BORDER
+        # Q&A header (4 columns)
+        qa_headers = [
+            ('Q', HEADER_FILL_DARK),
+            ('A (Questionnaire)', HEADER_FILL_ORANGE),
+            ('A (Transcript)', HEADER_FILL_BLUE),
+            ("David's Comments", PatternFill(start_color='2F5496', end_color='2F5496', fill_type='solid')),
+        ]
+        for col_idx, (header, fill) in enumerate(qa_headers, start=1):
+            cell = ws.cell(row=current_row, column=col_idx, value=header)
+            cell.font = HEADER_FONT
+            cell.fill = fill
+            cell.border = THIN_BORDER
         current_row += 1
 
-        # Collect Q&A for this block
-        block_qa = {}
+        # Collect all unique questions for this block
+        block_questions = set()
         for qa in qa_answers:
-            if qa.synergy_block == block:
-                block_qa[qa.question_text] = qa.answer_text or '-'
+            if qa.synergy_block == block and qa.question_text:
+                block_questions.add(qa.question_text)
         for ta in ta_answers:
-            if ta.synergy_block == block and ta.answer_text:
-                block_qa[ta.question_text] = ta.answer_text
-        for dn in david_notes:
-            if dn.synergy_block == block and dn.answer_text:
-                block_qa[dn.question_text] = dn.answer_text
+            if ta.synergy_block == block and ta.question_text:
+                block_questions.add(ta.question_text)
+        for dn in david_notes_answers:
+            if dn.synergy_block == block and dn.question_text:
+                block_questions.add(dn.question_text)
 
-        if block_qa:
-            for question, answer in block_qa.items():
+        if block_questions:
+            for question in sorted(block_questions):
+                # Column A: Question
                 cell_q = ws.cell(row=current_row, column=1, value=question)
                 cell_q.font = Font(name='Calibri', size=9)
                 cell_q.fill = CONTENT_FILL
                 cell_q.border = THIN_BORDER
                 cell_q.alignment = WRAP_ALIGN
 
-                cell_a = ws.cell(row=current_row, column=2, value=answer)
-                cell_a.font = Font(name='Calibri', size=9)
-                cell_a.fill = CONTENT_FILL
-                cell_a.border = THIN_BORDER
-                cell_a.alignment = WRAP_ALIGN
+                # Column B: Questionnaire Answer
+                cell_qa = ws.cell(row=current_row, column=2, value=qa_by_question.get(question, '-'))
+                cell_qa.font = Font(name='Calibri', size=9)
+                cell_qa.fill = CONTENT_FILL
+                cell_qa.border = THIN_BORDER
+                cell_qa.alignment = WRAP_ALIGN
+
+                # Column C: Transcript Answer
+                cell_ta = ws.cell(row=current_row, column=3, value=ta_by_question.get(question, '-'))
+                cell_ta.font = Font(name='Calibri', size=9)
+                cell_ta.fill = CONTENT_FILL
+                cell_ta.border = THIN_BORDER
+                cell_ta.alignment = WRAP_ALIGN
+
+                # Column D: David's Comments
+                cell_dn = ws.cell(row=current_row, column=4, value=dn_by_question.get(question, '-'))
+                cell_dn.font = Font(name='Calibri', size=9)
+                cell_dn.fill = CONTENT_FILL
+                cell_dn.border = THIN_BORDER
+                cell_dn.alignment = WRAP_ALIGN
+
                 current_row += 1
         else:
             cell = ws.cell(row=current_row, column=1, value="No data available")
@@ -713,16 +892,11 @@ def build_app_sheet(wb, app_data, session):
 
     # Tab color based on recommendation
     rec = app_data.get('recommendation', '')
-    if rec == 'EVOLVE':
-        ws.sheet_properties.tabColor = '00B050'
-    elif rec == 'INVEST':
-        ws.sheet_properties.tabColor = 'FFC000'
-    elif rec == 'MAINTAIN':
-        ws.sheet_properties.tabColor = '4472C4'
-    elif rec == 'ELIMINATE':
-        ws.sheet_properties.tabColor = 'FF0000'
-    else:
-        ws.sheet_properties.tabColor = 'D9D9D9'
+    tab_colors = {
+        'EVOLVE': '00B050', 'INVEST': 'FFC000',
+        'MAINTAIN': '4472C4', 'ELIMINATE': 'FF0000',
+    }
+    ws.sheet_properties.tabColor = tab_colors.get(rec, 'D9D9D9')
 
     return ws
 
@@ -776,54 +950,111 @@ def copy_template_sheet(wb, source_ws, tab_name, position):
 
 
 def populate_index_sheet(ws, apps_data):
-    """Update the Index sheet with dynamic hyperlinks to all generated sheets."""
-    # Find the last populated row
+    """Update the Index sheet with a unified table of all sheets with descriptions and hyperlinks."""
+    # Unmerge all merged cells in the dynamic area first (template may have merges)
+    merges_to_remove = [str(m) for m in ws.merged_cells.ranges
+                        if m.min_row >= 5]
+    for merge_range in merges_to_remove:
+        ws.unmerge_cells(merge_range)
+
+    # Clear old dynamic content
     last_row = ws.max_row
+    for row in range(5, last_row + 1):
+        for col in range(1, 6):
+            cell = ws.cell(row=row, column=col)
+            cell.value = None
+            cell.hyperlink = None
 
-    # Clear old content after row 5 (keep header/title rows)
-    for row in range(6, last_row + 1):
-        for col in range(1, 4):
-            ws.cell(row=row, column=col).value = None
-            ws.cell(row=row, column=col).hyperlink = None
+    # Column widths
+    ws.column_dimensions['A'].width = 6
+    ws.column_dimensions['B'].width = 30
+    ws.column_dimensions['C'].width = 55
+    ws.column_dimensions['D'].width = 18
 
-    row = 6
+    # Table header (row 5)
+    header_row = 5
+    headers = [('#', 6), ('Sheet', 30), ('Description', 55), ('Recommendation', 18)]
+    for col_idx, (header, _) in enumerate(headers, start=1):
+        cell = ws.cell(row=header_row, column=col_idx, value=header)
+        cell.font = HEADER_FONT
+        cell.fill = HEADER_FILL_DARK
+        cell.border = THIN_BORDER
+        cell.alignment = Alignment(horizontal='center', vertical='center')
 
-    # Section: Generated Tabs
-    cell = ws.cell(row=row, column=1, value="Generated Tabs:")
-    cell.font = Font(name='Calibri', size=12, bold=True, color='333333')
-    row += 1
+    # Fixed sheets with descriptions
+    fixed_sheets = [
+        ('Index', 'Table of contents and navigation'),
+        ('Introduction', 'APM program overview, mission, and scope'),
+        ('Methodology', 'Scoring framework and synergy block definitions'),
+        ('Calculator', 'Application scores with BVI/THI calculations'),
+        ('Dashboard', 'Portfolio scatter chart (BVI vs THI)'),
+        ('Strategic Roadmap', 'Prioritized strategic action plan'),
+        ('Value Chain', 'Applications mapped to utility value chain stages'),
+    ]
 
-    generated_tabs = ['Calculator', 'Dashboard', 'Strategic Roadmap', 'Application Groups', 'Value Chain']
-    for tab in generated_tabs:
-        cell = ws.cell(row=row, column=1, value=tab)
-        cell.font = Font(name='Calibri', size=10, color='0066CC', underline='single')
-        cell.hyperlink = f"#'{tab}'!A1"
+    row = header_row + 1
+
+    for idx, (sheet_name, description) in enumerate(fixed_sheets, start=1):
+        # Number
+        cell_num = ws.cell(row=row, column=1, value=idx)
+        cell_num.font = CONTENT_FONT
+        cell_num.border = THIN_BORDER
+        cell_num.alignment = Alignment(horizontal='center')
+
+        # Sheet name with hyperlink
+        cell_name = ws.cell(row=row, column=2, value=sheet_name)
+        cell_name.font = Font(name='Calibri', size=10, color='0066CC', underline='single')
+        cell_name.border = THIN_BORDER
+        cell_name.hyperlink = f"#'{sheet_name}'!A1"
+
+        # Description
+        cell_desc = ws.cell(row=row, column=3, value=description)
+        cell_desc.font = CONTENT_FONT
+        cell_desc.border = THIN_BORDER
+
+        # Recommendation (empty for fixed sheets)
+        cell_rec = ws.cell(row=row, column=4, value='')
+        cell_rec.border = THIN_BORDER
+
+        # Alternate row shading
+        if idx % 2 == 0:
+            for c in range(1, 5):
+                ws.cell(row=row, column=c).fill = CONTENT_FILL
+
         row += 1
 
-    row += 1
-
-    # Section: Application Assessments
-    cell = ws.cell(row=row, column=1, value="Application Assessments:")
-    cell.font = Font(name='Calibri', size=12, bold=True, color='333333')
-    row += 1
-
-    for app in apps_data:
+    # Application sheets
+    for app_idx, app in enumerate(apps_data):
+        idx = len(fixed_sheets) + app_idx + 1
         sheet_name = sanitize_sheet_name(app['name'])
         rec = app.get('recommendation', '')
         rec_colors = REC_COLORS.get(rec, {'fill': 'FFFFFF', 'font': '000000'})
 
-        cell = ws.cell(row=row, column=1, value=app['name'])
-        cell.font = Font(name='Calibri', size=10, color='0066CC', underline='single')
-        cell.hyperlink = f"#'{sheet_name}'!A1"
+        # Number
+        cell_num = ws.cell(row=row, column=1, value=idx)
+        cell_num.font = CONTENT_FONT
+        cell_num.border = THIN_BORDER
+        cell_num.alignment = Alignment(horizontal='center')
+
+        # Sheet name with hyperlink
+        cell_name = ws.cell(row=row, column=2, value=app['name'])
+        cell_name.font = Font(name='Calibri', size=10, color='0066CC', underline='single')
+        cell_name.border = THIN_BORDER
+        cell_name.hyperlink = f"#'{sheet_name}'!A1"
+
+        # Description
+        desc = f"Assessment: {app['name']}"
+        cell_desc = ws.cell(row=row, column=3, value=desc)
+        cell_desc.font = CONTENT_FONT
+        cell_desc.border = THIN_BORDER
 
         # Recommendation badge
-        cell_rec = ws.cell(row=row, column=2, value=rec)
-        cell_rec.font = Font(name='Calibri', size=9, bold=True, color=rec_colors['font'])
-        cell_rec.fill = PatternFill(start_color=rec_colors['fill'], end_color=rec_colors['fill'], fill_type='solid')
-
-        # Priority
-        cell_prio = ws.cell(row=row, column=3, value=app.get('priority', ''))
-        cell_prio.font = Font(name='Calibri', size=9)
+        cell_rec = ws.cell(row=row, column=4, value=rec)
+        cell_rec.font = Font(name='Calibri', size=10, bold=True, color=rec_colors.get('font', '000000'))
+        cell_rec.fill = PatternFill(start_color=rec_colors.get('fill', 'FFFFFF'),
+                                     end_color=rec_colors.get('fill', 'FFFFFF'), fill_type='solid')
+        cell_rec.border = THIN_BORDER
+        cell_rec.alignment = Alignment(horizontal='center')
 
         row += 1
 
@@ -838,9 +1069,11 @@ def generate_portfolio_excel(custom_weights=None):
         if not apps:
             return None
 
-        # Build apps_data list
+        # Build apps_data list (exclude "Questions Template" which is not a real application)
         apps_data = []
         for app in apps:
+            if app.name.strip().lower() == 'questions template':
+                continue
             scores_data = session.query(SynergyScore).filter_by(
                 application_id=app.id, approved=True
             ).all()
@@ -905,11 +1138,10 @@ def generate_portfolio_excel(custom_weights=None):
         except Exception:
             pass  # Template may not exist in all environments
 
-        # 2. Build data sheets
+        # 2. Build data sheets (positions after Index=0, Introduction=1, Methodology=2)
         build_calculator_sheet(wb, apps_data, custom_weights or {b: SYNERGY_BLOCKS[b]['Weight'] for b in SYNERGY_BLOCKS})
         build_dashboard_sheet(wb, apps_data)
         build_roadmap_sheet(wb, apps_data)
-        build_app_groups_sheet(wb, apps_data)
         build_value_chain_sheet(wb, apps_data)
 
         # 3. Individual app sheets

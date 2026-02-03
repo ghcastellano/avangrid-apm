@@ -835,7 +835,7 @@ def find_matching_application(file_app_name: str, app_dict: dict) -> tuple:
     Find matching application using smart matching algorithm
     Returns: (matched_app, match_type) or (None, None)
 
-    Match types: 'exact', 'normalized', 'fuzzy', 'token'
+    Match types: 'exact', 'normalized', 'substring', 'token', 'fuzzy', 'fuzzy_normalized'
     """
     file_app_lower = file_app_name.strip().lower()
 
@@ -851,7 +851,23 @@ def find_matching_application(file_app_name: str, app_dict: dict) -> tuple:
         if file_normalized == app_normalized:
             return app, 'normalized'
 
-    # Strategy 3: Token-based matching - prioritize primary tokens
+    # Strategy 3: Substring containment - check if file name contains an app name
+    # or vice versa. Prefer longest match to avoid "Bentley" matching when
+    # "Bentley - PLS-CADD" exists.
+    substring_matches = []
+    for app_name_lower, app in app_dict.items():
+        # Check both directions
+        if app_name_lower in file_app_lower or file_app_lower in app_name_lower:
+            # Score by length of overlap (prefer longer/more specific matches)
+            overlap_len = min(len(app_name_lower), len(file_app_lower))
+            substring_matches.append((app, overlap_len, app_name_lower))
+
+    if substring_matches:
+        # Pick the longest (most specific) match
+        substring_matches.sort(key=lambda x: x[1], reverse=True)
+        return substring_matches[0][0], 'substring'
+
+    # Strategy 4: Token-based matching - prioritize primary tokens
     file_primary, file_all = get_significant_tokens(file_app_name)
 
     best_match = None
@@ -887,18 +903,18 @@ def find_matching_application(file_app_name: str, app_dict: dict) -> tuple:
     if best_match:
         return best_match, 'token'
 
-    # Strategy 4: Fuzzy match using difflib (similarity > 85%)
+    # Strategy 5: Fuzzy match using difflib (similarity > 80%)
     matches = difflib.get_close_matches(
         file_app_lower,
         app_dict.keys(),
         n=1,
-        cutoff=0.80  # Lowered from 0.85
+        cutoff=0.80
     )
 
     if matches:
         return app_dict[matches[0]], 'fuzzy'
 
-    # Strategy 5: Try normalized fuzzy match
+    # Strategy 6: Try normalized fuzzy match
     app_names_normalized = {normalize_app_name(k): v for k, v in app_dict.items()}
 
     matches_normalized = difflib.get_close_matches(
@@ -1842,13 +1858,20 @@ def page_uploads():
 
                         try:
                             # Extract application name from filename
+                            # Handles multi-part names like "Bentley - PLS-CADD - Application Assessment..."
                             filename = uploaded_file.name
-                            if " - " in filename:
-                                # Pattern: "AppName - Description.ext"
-                                app_name_from_file = filename.split(" - ")[0].strip()
+                            name_no_ext = filename.rsplit('.', 1)[0].strip()
+
+                            # Smart suffix removal: find description suffix boundary
+                            # This preserves multi-part app names (e.g., "Bentley - PLS-CADD")
+                            suffix_idx = name_no_ext.lower().find(' - application assessment')
+                            if suffix_idx > 0:
+                                app_name_from_file = name_no_ext[:suffix_idx].strip()
+                            elif " - " in name_no_ext:
+                                # Fallback: take first segment
+                                app_name_from_file = name_no_ext.split(" - ")[0].strip()
                             else:
-                                # No separator - use filename without extension
-                                app_name_from_file = filename.rsplit('.', 1)[0].strip()
+                                app_name_from_file = name_no_ext
 
                             # Find matching application using smart matching
                             matched_app, match_type = find_matching_application(app_name_from_file, app_dict)

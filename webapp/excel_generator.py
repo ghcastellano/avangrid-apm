@@ -20,7 +20,7 @@ from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
 from database import (
     get_session, close_session,
-    Application, QuestionnaireAnswer, TranscriptAnswer, DavidNote, SynergyScore
+    Application, QuestionnaireAnswer, SynergyScore
 )
 
 EXCEL_TEMPLATE_PATH = os.path.join(os.path.dirname(__file__), "template_excel.xlsx")
@@ -811,88 +811,26 @@ def build_app_sheet(wb, app_data, session):
         ws.cell(row=i, column=4).border = THIN_BORDER
         dv.add(cell_b)
 
-    # Get all data sources
+    # Get questionnaire answers
     qa_answers = session.query(QuestionnaireAnswer).filter_by(application_id=app_data['id']).all()
-    ta_answers = session.query(TranscriptAnswer).filter_by(application_id=app_data['id']).all()
-    david_notes_answers = session.query(DavidNote).filter_by(application_id=app_data['id'], note_type='answer').all()
-    david_notes_insights = session.query(DavidNote).filter_by(application_id=app_data['id'], note_type='insight').all()
-    all_david_notes = session.query(DavidNote).filter_by(application_id=app_data['id']).all()
 
-    # Build lookup dicts by question text
     qa_by_question = {}
     for qa in qa_answers:
         if qa.question_text:
             qa_by_question[qa.question_text] = qa.answer_text or '-'
 
-    ta_by_question = {}
-    for ta in ta_answers:
-        if ta.question_text and ta.answer_text:
-            ta_by_question[ta.question_text] = ta.answer_text
-
-    dn_by_question = {}
-    for dn in david_notes_answers:
-        if dn.question_text and dn.answer_text:
-            dn_by_question[dn.question_text] = dn.answer_text
-
-    # ── David's Notes & Insights section (after scorecard) ──
+    # ── Detailed Q&A sections per synergy block ──
     current_row = 13
 
-    if all_david_notes:
-        ws.merge_cells(start_row=current_row, start_column=1, end_row=current_row, end_column=4)
-        cell = ws.cell(row=current_row, column=1, value="DAVID'S NOTES & INSIGHTS")
-        cell.font = Font(name='Calibri', size=11, bold=True, color='FFFFFF')
-        cell.fill = PatternFill(start_color='2F5496', end_color='2F5496', fill_type='solid')
-        cell.border = THIN_BORDER
-        for c in range(2, 5):
-            ws.cell(row=current_row, column=c).fill = PatternFill(start_color='2F5496', end_color='2F5496', fill_type='solid')
-            ws.cell(row=current_row, column=c).border = THIN_BORDER
-        current_row += 1
-
-        # Column headers
-        ws.cell(row=current_row, column=1, value="Topic").font = HEADER_FONT
-        ws['A' + str(current_row)].fill = HEADER_FILL_DARK
-        ws['A' + str(current_row)].border = THIN_BORDER
-        ws.merge_cells(start_row=current_row, start_column=2, end_row=current_row, end_column=4)
-        ws.cell(row=current_row, column=2, value="Insight / Comment").font = HEADER_FONT
-        ws['B' + str(current_row)].fill = HEADER_FILL_DARK
-        ws['B' + str(current_row)].border = THIN_BORDER
-        for c in range(3, 5):
-            ws.cell(row=current_row, column=c).fill = HEADER_FILL_DARK
-            ws.cell(row=current_row, column=c).border = THIN_BORDER
-        current_row += 1
-
-        for dn in all_david_notes:
-            topic = dn.question_text or ('General Insights' if dn.note_type == 'insight' else 'Note')
-            cell_topic = ws.cell(row=current_row, column=1, value=topic)
-            cell_topic.font = Font(name='Calibri', size=9, bold=True)
-            cell_topic.fill = CONTENT_FILL
-            cell_topic.border = THIN_BORDER
-            cell_topic.alignment = WRAP_ALIGN
-
-            ws.merge_cells(start_row=current_row, start_column=2, end_row=current_row, end_column=4)
-            cell_insight = ws.cell(row=current_row, column=2, value=dn.answer_text or '')
-            cell_insight.font = Font(name='Calibri', size=9)
-            cell_insight.fill = CONTENT_FILL
-            cell_insight.border = THIN_BORDER
-            cell_insight.alignment = WRAP_ALIGN
-            for c in range(3, 5):
-                ws.cell(row=current_row, column=c).fill = CONTENT_FILL
-                ws.cell(row=current_row, column=c).border = THIN_BORDER
-            current_row += 1
-
-        current_row += 1  # Blank separator
-
-    # ── Detailed Q&A sections per synergy block ──
     for block in blocks:
         # Block header
-        ws.merge_cells(start_row=current_row, start_column=1, end_row=current_row, end_column=4)
+        ws.merge_cells(start_row=current_row, start_column=1, end_row=current_row, end_column=2)
         cell = ws.cell(row=current_row, column=1, value=block.upper())
         cell.font = Font(name='Calibri', size=11, bold=True, color='FFFFFF')
         cell.fill = PatternFill(start_color='444444', end_color='444444', fill_type='solid')
         cell.border = THIN_BORDER
-        for c in range(2, 5):
-            ws.cell(row=current_row, column=c).fill = PatternFill(start_color='444444', end_color='444444', fill_type='solid')
-            ws.cell(row=current_row, column=c).border = THIN_BORDER
+        ws.cell(row=current_row, column=2).fill = PatternFill(start_color='444444', end_color='444444', fill_type='solid')
+        ws.cell(row=current_row, column=2).border = THIN_BORDER
         current_row += 1
 
         # Definitions
@@ -907,61 +845,37 @@ def build_app_sheet(wb, app_data, session):
 
         current_row += 1
 
-        # Q&A header (4 columns)
-        qa_headers = [
-            ('Q', HEADER_FILL_DARK),
-            ('A (Questionnaire)', HEADER_FILL_ORANGE),
-            ('A (Transcript)', HEADER_FILL_BLUE),
-            ("David's Comments", PatternFill(start_color='2F5496', end_color='2F5496', fill_type='solid')),
-        ]
-        for col_idx, (header, fill) in enumerate(qa_headers, start=1):
-            cell = ws.cell(row=current_row, column=col_idx, value=header)
-            cell.font = HEADER_FONT
-            cell.fill = fill
-            cell.border = THIN_BORDER
+        # Q&A header (2 columns: Question + Answer)
+        cell_q_hdr = ws.cell(row=current_row, column=1, value='Question')
+        cell_q_hdr.font = HEADER_FONT
+        cell_q_hdr.fill = HEADER_FILL_DARK
+        cell_q_hdr.border = THIN_BORDER
+
+        cell_a_hdr = ws.cell(row=current_row, column=2, value='Answer')
+        cell_a_hdr.font = HEADER_FONT
+        cell_a_hdr.fill = HEADER_FILL_ORANGE
+        cell_a_hdr.border = THIN_BORDER
         current_row += 1
 
-        # Collect all unique questions for this block
+        # Collect questions for this block
         block_questions = set()
         for qa in qa_answers:
             if qa.synergy_block == block and qa.question_text:
                 block_questions.add(qa.question_text)
-        for ta in ta_answers:
-            if ta.synergy_block == block and ta.question_text:
-                block_questions.add(ta.question_text)
-        for dn in david_notes_answers:
-            if dn.synergy_block == block and dn.question_text:
-                block_questions.add(dn.question_text)
 
         if block_questions:
             for question in sorted(block_questions):
-                # Column A: Question
                 cell_q = ws.cell(row=current_row, column=1, value=question)
                 cell_q.font = Font(name='Calibri', size=9)
                 cell_q.fill = CONTENT_FILL
                 cell_q.border = THIN_BORDER
                 cell_q.alignment = WRAP_ALIGN
 
-                # Column B: Questionnaire Answer
-                cell_qa = ws.cell(row=current_row, column=2, value=qa_by_question.get(question, '-'))
-                cell_qa.font = Font(name='Calibri', size=9)
-                cell_qa.fill = CONTENT_FILL
-                cell_qa.border = THIN_BORDER
-                cell_qa.alignment = WRAP_ALIGN
-
-                # Column C: Transcript Answer
-                cell_ta = ws.cell(row=current_row, column=3, value=ta_by_question.get(question, '-'))
-                cell_ta.font = Font(name='Calibri', size=9)
-                cell_ta.fill = CONTENT_FILL
-                cell_ta.border = THIN_BORDER
-                cell_ta.alignment = WRAP_ALIGN
-
-                # Column D: David's Comments
-                cell_dn = ws.cell(row=current_row, column=4, value=dn_by_question.get(question, '-'))
-                cell_dn.font = Font(name='Calibri', size=9)
-                cell_dn.fill = CONTENT_FILL
-                cell_dn.border = THIN_BORDER
-                cell_dn.alignment = WRAP_ALIGN
+                cell_a = ws.cell(row=current_row, column=2, value=qa_by_question.get(question, '-'))
+                cell_a.font = Font(name='Calibri', size=9)
+                cell_a.fill = CONTENT_FILL
+                cell_a.border = THIN_BORDER
+                cell_a.alignment = WRAP_ALIGN
 
                 current_row += 1
         else:

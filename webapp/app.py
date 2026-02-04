@@ -2659,68 +2659,104 @@ def page_analyses():
                 'ELIMINATE': '#EF4444'
             }
 
-            # Smart label positioning based on quadrant location
-            def get_text_position(thi, bvi):
-                """Return optimal text position based on point location in graph"""
-                # Divide graph into 9 zones for smart positioning (X=THI, Y=BVI)
-                if thi < 35:
-                    if bvi > 65:
-                        return 'middle right'  # Top-left quadrant -> text to right
-                    elif bvi < 35:
-                        return 'top right'     # Bottom-left quadrant -> text to top-right
-                    else:
-                        return 'middle right'  # Middle-left -> text to right
-                elif thi > 65:
-                    if bvi > 65:
-                        return 'middle left'   # Top-right quadrant -> text to left
-                    elif bvi < 35:
-                        return 'top left'      # Bottom-right quadrant -> text to top-left
-                    else:
-                        return 'middle left'   # Middle-right -> text to left
-                else:
-                    if bvi > 65:
-                        return 'bottom center' # Top-center -> text below
-                    elif bvi < 35:
-                        return 'top center'    # Bottom-center -> text above
-                    else:
-                        return 'top center'    # Center -> text above
+            import math
 
-            def smart_truncate(name, max_length=20):
+            def smart_truncate(name, max_length=25):
                 """Truncate keeping whole words when possible"""
                 if len(name) <= max_length:
                     return name
-
-                # Try to break at word boundary
                 truncated = name[:max_length]
                 last_space = truncated.rfind(' ')
-
-                if last_space > max_length * 0.6:  # If we can keep at least 60% of text
+                if last_space > max_length * 0.6:
                     return truncated[:last_space] + '...'
                 else:
                     return truncated + '...'
 
-            import numpy as np
-            np.random.seed(42)
+            def compute_label_positions(apps_list):
+                """Compute non-overlapping label positions using greedy placement.
+                Returns list of (label_x, label_y) in data coordinates."""
+                OFFSETS = [
+                    (3, 3), (3, -3), (-3, 3), (-3, -3),
+                    (5, 0), (-5, 0), (0, 4), (0, -4),
+                    (6, 4), (6, -4), (-6, 4), (-6, -4),
+                    (9, 0), (-9, 0), (0, 7), (0, -7),
+                ]
+                coords = [(a['thi'], a['bvi'], a['name']) for a in apps_list]
+                # Sort by density (most crowded points get priority)
+                ncounts = []
+                for i, (x1, y1, _) in enumerate(coords):
+                    cnt = sum(1 for j, (x2, y2, _) in enumerate(coords)
+                              if i != j and math.hypot(x2 - x1, y2 - y1) < 12)
+                    ncounts.append(cnt)
+                order = sorted(range(len(coords)), key=lambda i: -ncounts[i])
 
+                positions = [None] * len(coords)
+                placed = []
+                CHAR_W = 0.55
+                LABEL_H = 2.5
+                PAD = 0.5
+
+                def bbox(lx, ly, name):
+                    w = len(name) * CHAR_W
+                    return (lx - PAD, ly - LABEL_H / 2 - PAD,
+                            lx + w + PAD, ly + LABEL_H / 2 + PAD)
+
+                def score(bb):
+                    s = 0
+                    cx = (bb[0] + bb[2]) / 2
+                    cy = (bb[1] + bb[3]) / 2
+                    for pb in placed:
+                        dx = min(bb[2], pb[2]) - max(bb[0], pb[0])
+                        dy = min(bb[3], pb[3]) - max(bb[1], pb[1])
+                        if dx > 0 and dy > 0:
+                            s += dx * dy * 10
+                        else:
+                            d = math.hypot(cx - (pb[0] + pb[2]) / 2,
+                                           cy - (pb[1] + pb[3]) / 2)
+                            if d < 5: s += 3
+                            elif d < 8: s += 1
+                    if bb[0] < -2: s += 6
+                    if bb[2] > 102: s += 6
+                    if bb[1] < -2: s += 6
+                    if bb[3] > 102: s += 6
+                    for x, y, _ in coords:
+                        if bb[0] <= x <= bb[2] and bb[1] <= y <= bb[3]:
+                            s += 4
+                    return s
+
+                for idx in order:
+                    x, y, name = coords[idx]
+                    best_pos = (x + 3, y + 3)
+                    best_sc = float('inf')
+                    best_bb = None
+                    for odx, ody in OFFSETS:
+                        lx, ly = x + odx, y + ody
+                        bb = bbox(lx, ly, name)
+                        sc = score(bb)
+                        if sc < best_sc:
+                            best_sc = sc
+                            best_pos = (lx, ly)
+                            best_bb = bb
+                            if sc == 0:
+                                break
+                    positions[idx] = best_pos
+                    if best_bb:
+                        placed.append(best_bb)
+                return positions
+
+            # Pre-compute non-overlapping label positions
+            label_positions = compute_label_positions(apps_with_scores)
+
+            # Add scatter markers (no text on markers - labels are annotations)
             for rec in ['EVOLVE', 'INVEST', 'MAINTAIN', 'ELIMINATE']:
                 df_rec = df[df['recommendation'] == rec].copy()
                 if not df_rec.empty:
                     for idx, (_, row) in enumerate(df_rec.iterrows()):
-                        truncated_name = smart_truncate(row['name'], max_length=20)
-                        text_pos = get_text_position(row['thi'], row['bvi'])
-
                         fig.add_trace(go.Scatter(
                             x=[row['thi']],
                             y=[row['bvi']],
-                            mode='markers+text',
+                            mode='markers',
                             name=rec,
-                            text=[truncated_name],
-                            textposition=text_pos,
-                            textfont=dict(
-                                size=9,
-                                color='#000000',
-                                family='Arial, sans-serif'
-                            ),
                             marker=dict(
                                 size=10,
                                 color=colors_map[rec],
@@ -2736,6 +2772,26 @@ def page_analyses():
                                 font=dict(size=12, color='black')
                             )
                         ))
+
+            # Add non-overlapping labels as annotations with leader lines
+            for i, app in enumerate(apps_with_scores):
+                lx, ly = label_positions[i]
+                truncated = smart_truncate(app['name'], max_length=25)
+                fig.add_annotation(
+                    x=app['thi'], y=app['bvi'],
+                    ax=lx, ay=ly,
+                    xref='x', yref='y',
+                    axref='x', ayref='y',
+                    text=truncated,
+                    showarrow=True,
+                    arrowhead=0,
+                    arrowwidth=0.5,
+                    arrowcolor='#AAAAAA',
+                    font=dict(size=8, color='#333333', family='Arial, sans-serif'),
+                    bgcolor='rgba(255,255,255,0.7)',
+                    borderpad=1,
+                    standoff=4,
+                )
 
             # Add quadrant labels (X=THI, Y=BVI) - Increased font size
             fig.add_annotation(x=80, y=80, text="EVOLVE", showarrow=False, font=dict(size=20, color="green", family="Arial Black"))

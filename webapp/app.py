@@ -2127,25 +2127,6 @@ def page_applications():
 
         st.markdown("---")
 
-        # David's Key Insights (show ONCE per application, not per block)
-        from database import DavidNote
-        david_insights = session.query(DavidNote).filter_by(
-            application_id=selected_app.id,
-            note_type='insight'
-        ).first()
-
-        if david_insights:
-            st.markdown("### 💡 David's Key Insights")
-            st.markdown("""
-            <div style="background: #FEF3C7; padding: 1.5rem; border-radius: 8px; border-left: 4px solid #F59E0B; margin-bottom: 1.5rem;">
-                <p style="margin: 0; color: #92400E; white-space: pre-wrap;">
-            """ + david_insights.answer_text + """
-                </p>
-            </div>
-            """, unsafe_allow_html=True)
-
-        st.markdown("---")
-
         # Display by synergy block
         current_weights = get_current_weights()
         for block_name, block_info in SYNERGY_BLOCKS.items():
@@ -2161,52 +2142,13 @@ def page_applications():
                 ).all()
                 qa_dict = {qa.question_text: qa.answer_text for qa in qa_answers}
 
-                # Get transcript answers
-                ta_answers = session.query(TranscriptAnswer).filter_by(
-                    application_id=selected_app.id,
-                    synergy_block=block_name
-                ).all()
-                ta_dict = {ta.question_text: (ta.answer_text, ta.confidence_score) for ta in ta_answers}
-
-                # Get David's notes
-                david_answers = session.query(DavidNote).filter_by(
-                    application_id=selected_app.id,
-                    synergy_block=block_name,
-                    note_type='answer'
-                ).all()
-                david_dict = {dn.question_text: dn.answer_text for dn in david_answers}
-
                 # Build table data - Show ALL questions (with or without answers)
                 table_data = []
                 for question in block_questions:
                     qa_answer = qa_dict.get(question, "-")
-                    ta_info = ta_dict.get(question, ("-", 0))
-                    ta_answer = ta_info[0] if isinstance(ta_info, tuple) else "-"
-                    david_answer = david_dict.get(question, "-")
-                    confidence = f"{ta_info[1]:.0%}" if isinstance(ta_info, tuple) and ta_info[1] > 0 else "-"
-
-                    # Merge transcript and David notes intelligently
-                    combined_answer = ""
-                    if ta_answer != "-" and david_answer != "-":
-                        # Both exist - check if they're similar
-                        if ta_answer.strip().lower() == david_answer.strip().lower():
-                            # Same answer, show once
-                            combined_answer = ta_answer
-                        else:
-                            # Different answers, show both with labels
-                            combined_answer = f"Transcript: {ta_answer}\n\nDavid: {david_answer}"
-                    elif ta_answer != "-":
-                        combined_answer = ta_answer
-                    elif david_answer != "-":
-                        combined_answer = f"David: {david_answer}"
-                    else:
-                        combined_answer = "-"
-
                     table_data.append({
-                        "Question": question,  # No truncation
-                        "Questionnaire": qa_answer,  # No truncation
-                        "Transcript and David notes": combined_answer,  # Combined, no truncation
-                        "Confidence": confidence
+                        "Question": question,
+                        "Answer": qa_answer,
                     })
 
                 if table_data:
@@ -2216,32 +2158,21 @@ def page_applications():
                     row_height = 35
                     calculated_height = min(max((len(table_data) + 1) * row_height, 150), 800)
 
-                    # Configure column widths and text wrapping
                     st.dataframe(
                         df,
                         width="stretch",
-                        height=calculated_height,  # Dynamic height based on number of rows
+                        height=calculated_height,
                         column_config={
                             "Question": st.column_config.TextColumn(
                                 "Question",
                                 width="medium",
                                 help="Master question from questionnaire"
                             ),
-                            "Questionnaire": st.column_config.TextColumn(
-                                "Questionnaire",
+                            "Answer": st.column_config.TextColumn(
+                                "Answer",
                                 width="large",
-                                help="Answer from uploaded questionnaire"
+                                help="Answer from questionnaire"
                             ),
-                            "Transcript and David notes": st.column_config.TextColumn(
-                                "Transcript and David notes",
-                                width="large",
-                                help="Combined answers from transcript and David's notes"
-                            ),
-                            "Confidence": st.column_config.TextColumn(
-                                "Confidence",
-                                width="small",
-                                help="AI confidence score for transcript answer"
-                            )
                         }
                     )
                 else:

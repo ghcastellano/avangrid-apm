@@ -1,6 +1,7 @@
 """
 Database module for Avangrid APM Platform
-SQLite database with SQLAlchemy ORM
+Supports PostgreSQL (production/Streamlit Cloud) and SQLite (local development).
+Set DATABASE_URL env var or Streamlit secret for PostgreSQL.
 """
 
 from sqlalchemy import create_engine, Column, String, Integer, Float, Boolean, Text, DateTime, ForeignKey, JSON
@@ -12,24 +13,43 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Database setup - always use path relative to this file for portability
-# Ignore DATABASE_PATH env var if it's a relative path (breaks on Streamlit Cloud
-# where CWD is repo root, not webapp/)
-_DEFAULT_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "avangrid.db")
-_env_db_path = os.getenv("DATABASE_PATH")
-if _env_db_path and os.path.isabs(_env_db_path):
-    DATABASE_PATH = _env_db_path
+# ── Determine database URL ──
+# Priority: DATABASE_URL env var > Streamlit secrets > local SQLite
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+if not DATABASE_URL:
+    # Try Streamlit secrets (available on Streamlit Cloud)
+    try:
+        import streamlit as st
+        DATABASE_URL = st.secrets.get("DATABASE_URL")
+    except Exception:
+        pass
+
+if DATABASE_URL:
+    # PostgreSQL mode - persistent cloud database
+    # Fix common Heroku/Neon format: postgres:// → postgresql://
+    if DATABASE_URL.startswith("postgres://"):
+        DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+    _USE_POSTGRES = True
 else:
-    DATABASE_PATH = _DEFAULT_DB_PATH
+    # SQLite mode - local development
+    _USE_POSTGRES = False
+    _DEFAULT_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "avangrid.db")
+    _env_db_path = os.getenv("DATABASE_PATH")
+    if _env_db_path and os.path.isabs(_env_db_path):
+        DATABASE_PATH = _env_db_path
+    else:
+        DATABASE_PATH = _DEFAULT_DB_PATH
 
 
 def _ensure_writable_db():
-    """On Streamlit Cloud the git-cloned repo is read-only.
-    SQLite needs write access to both the DB file AND its directory (for journal).
-    If the directory is not writable, copy the DB to /tmp."""
+    """For SQLite only: ensure the database directory is writable.
+    On Streamlit Cloud (without DATABASE_URL), copies DB to /tmp."""
     global DATABASE_PATH
 
-    # Test actual write capability on the directory (SQLite needs this for journal files)
+    if _USE_POSTGRES:
+        return  # Not needed for PostgreSQL
+
     db_dir = os.path.dirname(DATABASE_PATH)
     test_file = os.path.join(db_dir, ".write_test")
     try:
@@ -229,11 +249,12 @@ def init_db():
     """Initialize database and create all tables"""
     global engine, SessionLocal
 
-    # Ensure data directory exists
-    os.makedirs(os.path.dirname(DATABASE_PATH), exist_ok=True)
-
-    # Create engine
-    engine = create_engine(f'sqlite:///{DATABASE_PATH}', echo=False)
+    if _USE_POSTGRES:
+        engine = create_engine(DATABASE_URL, echo=False, pool_pre_ping=True)
+    else:
+        # SQLite - ensure data directory exists
+        os.makedirs(os.path.dirname(DATABASE_PATH), exist_ok=True)
+        engine = create_engine(f'sqlite:///{DATABASE_PATH}', echo=False)
 
     # Create all tables
     Base.metadata.create_all(engine)

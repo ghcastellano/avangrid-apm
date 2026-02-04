@@ -4,6 +4,7 @@ streamlit-option-menu>=0.3.6
 
 # Database
 sqlalchemy>=2.0.0
+psycopg2-binary>=2.9.0
 
 # OpenAI Integration
 openai>=1.10.0

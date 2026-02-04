@@ -758,34 +758,27 @@ def build_value_chain_sheet(wb, apps_data):
 
 def build_app_sheet(wb, app_data, session):
     """Build an individual application assessment sheet.
-    4-column layout: Question | Questionnaire Answer | Transcript Answer | David's Comments
-    Includes David's insights summary table near the scorecard."""
+    2-column layout: Question | Answer (from questionnaire only)."""
     sheet_name = sanitize_sheet_name(app_data['name'])
     ws = wb.create_sheet(sheet_name)
 
-    ws.column_dimensions['A'].width = 45
-    ws.column_dimensions['B'].width = 45
-    ws.column_dimensions['C'].width = 45
-    ws.column_dimensions['D'].width = 45
+    ws.column_dimensions['A'].width = 50
+    ws.column_dimensions['B'].width = 55
 
     # Title
-    ws.merge_cells('A1:D1')
+    ws.merge_cells('A1:B1')
     cell = ws.cell(row=1, column=1, value=f"Assessment: {app_data['name']}")
     cell.font = Font(name='Calibri', size=14, bold=True, color='E87722')
 
     # Scorecard header
-    ws.merge_cells('A3:B3')
-    ws.cell(row=3, column=1, value="EXECUTIVE SCORECARD").font = HEADER_FONT
-    ws['A3'].fill = HEADER_FILL_DARK
-    ws['A3'].border = THIN_BORDER
-    ws['B3'].fill = HEADER_FILL_DARK
-    ws['B3'].border = THIN_BORDER
-    ws.merge_cells('C3:D3')
-    ws.cell(row=3, column=3, value="SCORE (0-5)").font = HEADER_FONT
-    ws['C3'].fill = HEADER_FILL_DARK
-    ws['C3'].border = THIN_BORDER
-    ws['D3'].fill = HEADER_FILL_DARK
-    ws['D3'].border = THIN_BORDER
+    cell_a = ws.cell(row=3, column=1, value="EXECUTIVE SCORECARD")
+    cell_a.font = HEADER_FONT
+    cell_a.fill = HEADER_FILL_DARK
+    cell_a.border = THIN_BORDER
+    cell_b = ws.cell(row=3, column=2, value="SCORE (0-5)")
+    cell_b.font = HEADER_FONT
+    cell_b.fill = HEADER_FILL_DARK
+    cell_b.border = THIN_BORDER
 
     # Score rows
     blocks = list(SYNERGY_BLOCKS.keys())
@@ -793,22 +786,17 @@ def build_app_sheet(wb, app_data, session):
     ws.add_data_validation(dv)
 
     for i, block in enumerate(blocks, start=4):
-        ws.merge_cells(start_row=i, start_column=1, end_row=i, end_column=2)
         cell_a = ws.cell(row=i, column=1, value=block)
         cell_a.font = Font(name='Calibri', size=10, bold=True)
         cell_a.fill = CONTENT_FILL
         cell_a.border = THIN_BORDER
         cell_a.alignment = Alignment(horizontal='right')
-        ws.cell(row=i, column=2).fill = CONTENT_FILL
-        ws.cell(row=i, column=2).border = THIN_BORDER
 
         score = app_data['scores'].get(block, 0)
-        ws.merge_cells(start_row=i, start_column=3, end_row=i, end_column=4)
-        cell_b = ws.cell(row=i, column=3, value=score)
+        cell_b = ws.cell(row=i, column=2, value=score)
         cell_b.font = Font(name='Calibri', size=11)
         cell_b.border = THIN_BORDER
         cell_b.alignment = Alignment(horizontal='center')
-        ws.cell(row=i, column=4).border = THIN_BORDER
         dv.add(cell_b)
 
     # Get questionnaire answers

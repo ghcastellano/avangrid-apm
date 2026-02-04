@@ -4,8 +4,7 @@ SQLite database with SQLAlchemy ORM
 """
 
 from sqlalchemy import create_engine, Column, String, Integer, Float, Boolean, Text, DateTime, ForeignKey, JSON
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, relationship
+from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 from datetime import datetime, timezone
 import os
 import shutil
@@ -30,13 +29,11 @@ def _ensure_writable_db():
     If the directory is not writable, copy the DB to /tmp."""
     global DATABASE_PATH
 
-    if not os.path.exists(DATABASE_PATH):
-        return  # Nothing to copy; init_db will create a new one
-
     # Test actual write capability on the directory (SQLite needs this for journal files)
     db_dir = os.path.dirname(DATABASE_PATH)
     test_file = os.path.join(db_dir, ".write_test")
     try:
+        os.makedirs(db_dir, exist_ok=True)
         with open(test_file, 'w') as f:
             f.write('test')
         os.remove(test_file)
@@ -44,11 +41,12 @@ def _ensure_writable_db():
     except OSError:
         pass
 
-    # Database directory is read-only - copy to writable location
+    # Database directory is read-only - use writable location
     writable_path = os.path.join("/tmp", "avangrid_apm.db")
-    if not os.path.exists(writable_path) or \
-       os.path.getsize(writable_path) != os.path.getsize(DATABASE_PATH):
-        shutil.copy2(DATABASE_PATH, writable_path)
+    if os.path.exists(DATABASE_PATH):
+        if not os.path.exists(writable_path) or \
+           os.path.getsize(writable_path) != os.path.getsize(DATABASE_PATH):
+            shutil.copy2(DATABASE_PATH, writable_path)
     DATABASE_PATH = writable_path
 
 
@@ -256,4 +254,8 @@ def close_session(session):
     session.close()
 
 # Initialize on import
-init_db()
+try:
+    init_db()
+except Exception as e:
+    import sys
+    print(f"Warning: Database init deferred ({e})", file=sys.stderr)

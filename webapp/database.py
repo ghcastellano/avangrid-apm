@@ -83,6 +83,7 @@ class Application(Base):
     is_green = Column(Boolean, default=False)
     subcategory = Column(String)
     quick_win = Column(Boolean, default=False)
+    recommendation_override = Column(String)  # Manual override: 'EVOLVE', 'INVEST', 'MAINTAIN', 'ELIMINATE', or None
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 

@@ -415,8 +415,8 @@ def build_dashboard_sheet(wb, apps_data):
 
     ws = wb.create_sheet("Dashboard")
 
-    # ── Data table for reference (columns A-D) ──
-    headers = [("Application", 35), ("THI", 10), ("BVI", 10), ("Recommendation", 18)]
+    # ── Data table for reference (columns A-E) ──
+    headers = [("Application", 35), ("THI", 10), ("BVI", 10), ("Recommendation", 18), ("Override", 10)]
     for col, (hdr, width) in enumerate(headers, 1):
         cell = ws.cell(row=1, column=col, value=hdr)
         cell.font = HEADER_FONT
@@ -426,6 +426,8 @@ def build_dashboard_sheet(wb, apps_data):
         ws.column_dimensions[get_column_letter(col)].width = width
 
     for i, app in enumerate(apps_data, start=2):
+        is_overridden = app.get('is_overridden', False)
+
         cell = ws.cell(row=i, column=1, value=app['name'])
         cell.font = CONTENT_FONT
         cell.border = THIN_BORDER
@@ -449,6 +451,14 @@ def build_dashboard_sheet(wb, apps_data):
         cell.fill = PatternFill(start_color=rec_colors['fill'], end_color=rec_colors['fill'], fill_type='solid')
         cell.border = THIN_BORDER
         cell.alignment = Alignment(horizontal='center')
+
+        # Override indicator column
+        cell = ws.cell(row=i, column=5, value='⚠️' if is_overridden else '')
+        cell.font = CONTENT_FONT
+        cell.border = THIN_BORDER
+        cell.alignment = Alignment(horizontal='center')
+        if is_overridden:
+            cell.fill = PatternFill(start_color='FEF3C7', end_color='FEF3C7', fill_type='solid')
 
     # ── Generate matplotlib chart ──
     marker_colors_plt = {
@@ -488,24 +498,36 @@ def build_dashboard_sheet(wb, apps_data):
     ax.set_title('Application Portfolio \u2013 Strategic Positioning',
                  fontsize=16, fontweight='bold', pad=15)
 
-    # Plot scatter points
+    # Plot scatter points - use star marker for overridden apps
+    has_overridden = any(app.get('is_overridden', False) for app in apps_data)
     for app in apps_data:
         color = marker_colors_plt.get(app['recommendation'], '#999999')
-        ax.scatter(app['thi'], app['bvi'], c=color, s=90, zorder=5,
-                   edgecolors='white', linewidth=0.5)
+        is_overridden = app.get('is_overridden', False)
+        if is_overridden:
+            # Star marker with thick black edge for overridden apps
+            ax.scatter(app['thi'], app['bvi'], c=color, s=150, zorder=6,
+                       marker='*', edgecolors='#000000', linewidth=1.5)
+        else:
+            # Regular circle marker
+            ax.scatter(app['thi'], app['bvi'], c=color, s=90, zorder=5,
+                       edgecolors='white', linewidth=0.5)
 
     # Compute optimal label positions (greedy, no-collision)
     positions = _compute_matplotlib_label_positions(apps_data)
 
-    # Draw labels with thin leader lines
+    # Draw labels with thin leader lines - add ⚠️ suffix for overridden apps
     for i, app in enumerate(apps_data):
         dx, dy, ha, va = positions[i]
+        is_overridden = app.get('is_overridden', False)
+        label_text = app['name'] + ' ⚠️' if is_overridden else app['name']
+        label_color = '#B45309' if is_overridden else '#333333'  # Orange-brown for overridden
         ax.annotate(
-            app['name'],
+            label_text,
             xy=(app['thi'], app['bvi']),
             xytext=(app['thi'] + dx, app['bvi'] + dy),
             fontsize=7,
-            color='#333333',
+            fontweight='bold' if is_overridden else 'normal',
+            color=label_color,
             ha=ha, va=va,
             arrowprops=dict(arrowstyle='-', color='#BBBBBB', linewidth=0.5,
                             shrinkA=0, shrinkB=2),
@@ -519,6 +541,12 @@ def build_dashboard_sheet(wb, apps_data):
         mpatches.Patch(facecolor='#3B82F6', edgecolor='#CCCCCC', label='MAINTAIN'),
         mpatches.Patch(facecolor='#EF4444', edgecolor='#CCCCCC', label='ELIMINATE'),
     ]
+    # Add override indicator to legend if any app is overridden
+    if has_overridden:
+        from matplotlib.lines import Line2D
+        legend_elements.append(Line2D([0], [0], marker='*', color='w', label='⚠️ Override',
+                                       markerfacecolor='gray', markersize=12,
+                                       markeredgecolor='black', markeredgewidth=1.5))
     ax.legend(handles=legend_elements, loc='lower right', fontsize=11,
               framealpha=0.9, edgecolor='#CCCCCC')
 
@@ -1067,7 +1095,11 @@ def generate_portfolio_excel(custom_weights=None):
             w = custom_weights or {b: SYNERGY_BLOCKS[b]['Weight'] for b in SYNERGY_BLOCKS}
             weight_dict = {b: {'Weight': w.get(b, SYNERGY_BLOCKS[b]['Weight'])} for b in SYNERGY_BLOCKS}
             bvi, thi = calculate_bvi_thi(scores, weight_dict)
-            rec = get_recommendation(bvi, thi)
+            calculated_rec = get_recommendation(bvi, thi)
+
+            # Use override if set, otherwise use calculated recommendation
+            rec = app.recommendation_override if app.recommendation_override else calculated_rec
+            is_overridden = app.recommendation_override is not None and app.recommendation_override != calculated_rec
 
             # Priority
             priority = ''
@@ -1100,6 +1132,8 @@ def generate_portfolio_excel(custom_weights=None):
                 'bvi': bvi,
                 'thi': thi,
                 'recommendation': rec,
+                'calculated_recommendation': calculated_rec,
+                'is_overridden': is_overridden,
                 'subcategory': app.subcategory or '',
                 'quick_win': app.quick_win,
                 'priority': priority,

@@ -2528,7 +2528,11 @@ def page_analyses():
             if scores_data:
                 scores = {s.block_name: s.score for s in scores_data}
                 bvi, thi = calculate_bvi_thi(scores, {b: {'Weight': w} for b, w in get_current_weights().items()})
-                rec = get_recommendation(bvi, thi)
+                calculated_rec = get_recommendation(bvi, thi)
+
+                # Use override if set, otherwise use calculated recommendation
+                rec = app.recommendation_override if app.recommendation_override else calculated_rec
+                is_overridden = app.recommendation_override is not None and app.recommendation_override != calculated_rec
 
                 # Get individual block scores
                 arch_score = next((s.score for s in scores_data if s.block_name == 'Architecture'), 3)
@@ -2543,6 +2547,8 @@ def page_analyses():
                     'bvi': bvi,
                     'thi': thi,
                     'recommendation': rec,
+                    'calculated_recommendation': calculated_rec,
+                    'is_overridden': is_overridden,
                     'arch_score': arch_score,
                     'maint_score': maint_score,
                     'integration_count': deps_info['count'],
@@ -2660,29 +2666,44 @@ def page_analyses():
                 if not df_rec.empty:
                     for idx, (_, row) in enumerate(df_rec.iterrows()):
                         text_pos = pos_lookup.get(row['name'], 'top right')
-                        display_name = row['name'] if len(row['name']) <= 22 else row['name'][:19] + '...'
+                        is_overridden = row.get('is_overridden', False)
+                        base_name = row['name'] if len(row['name']) <= 22 else row['name'][:19] + '...'
+                        display_name = base_name + ' ⚠️' if is_overridden else base_name
+
+                        # Star marker for overridden apps, circle for normal
+                        marker_symbol = 'star' if is_overridden else 'circle'
+                        marker_size = 14 if is_overridden else 10
+                        marker_line_color = '#000000' if is_overridden else 'white'
+                        marker_line_width = 2 if is_overridden else 1.5
+                        text_color = '#B45309' if is_overridden else '#444444'  # Orange-brown for overridden
+
+                        hover_text = f'<b>{row["name"]}</b><br>THI: {row["thi"]:.1f}<br>BVI: {row["bvi"]:.1f}'
+                        if is_overridden:
+                            hover_text += f'<br><b style="color:orange">⚠️ Recommendation Override</b><br>Calculated: {row.get("calculated_recommendation", "N/A")}'
+                        hover_text += '<extra></extra>'
 
                         fig.add_trace(go.Scatter(
                             x=[row['thi']],
                             y=[row['bvi']],
                             mode='markers+text',
-                            name=rec,
+                            name=rec if not is_overridden else f'{rec} (Override)',
                             text=[display_name],
                             textposition=text_pos,
                             textfont=dict(
                                 size=8,
-                                color='#444444',
+                                color=text_color,
                                 family='Arial, sans-serif'
                             ),
                             marker=dict(
-                                size=10,
+                                size=marker_size,
+                                symbol=marker_symbol,
                                 color=colors_map[rec],
-                                line=dict(width=1.5, color='white'),
+                                line=dict(width=marker_line_width, color=marker_line_color),
                                 opacity=0.85
                             ),
-                            showlegend=(idx == 0),
+                            showlegend=(idx == 0 and not is_overridden),
                             legendgroup=rec,
-                            hovertemplate=f'<b>{row["name"]}</b><br>THI: {row["thi"]:.1f}<br>BVI: {row["bvi"]:.1f}<extra></extra>',
+                            hovertemplate=hover_text,
                             hoverlabel=dict(
                                 bgcolor='white',
                                 bordercolor=colors_map[rec],
@@ -2723,6 +2744,21 @@ def page_analyses():
             )
 
             st.plotly_chart(fig, width="stretch", key="strategic_matrix_thi_bvi_v2")
+
+            # Show note if there are any overridden recommendations
+            overridden_apps = [app for app in apps_with_scores if app.get('is_overridden', False)]
+            if overridden_apps:
+                st.markdown(f"""
+                <div style="background: #FEF3C7; border-left: 4px solid #F59E0B; padding: 0.75rem 1rem; border-radius: 4px; margin-top: 0.5rem;">
+                    <p style="margin: 0; font-size: 0.9rem;">
+                        <strong>⚠️ {len(overridden_apps)} application(s) with manual recommendation override:</strong>
+                        {', '.join([f'<strong>{app["name"]}</strong> ({app["calculated_recommendation"]} → {app["recommendation"]})' for app in overridden_apps])}
+                    </p>
+                    <p style="margin: 0.25rem 0 0 0; font-size: 0.8rem; color: #6B7280;">
+                        Override recommendations in the Decision Matrix table below.
+                    </p>
+                </div>
+                """, unsafe_allow_html=True)
 
         with tab2:
             # Enhanced Insights Tab with Portfolio-Level Analysis
@@ -3234,10 +3270,9 @@ def page_calculator():
                         weights_changed = True
                     st.session_state.custom_weights[block] = new_val
 
-            # Auto-save to database whenever weights change
-            save_weights_to_db()
-
+            # Auto-save to database only when weights actually change
             if weights_changed:
+                save_weights_to_db()
                 st.toast("Weights saved automatically!", icon="✅")
 
             # Show totals
@@ -3292,18 +3327,26 @@ def page_calculator():
             'Maintain': 'P3 - Routine'
         }
 
-        for app in apps:
-            scores_data = session.query(SynergyScore).filter_by(
-                application_id=app.id,
-                approved=True
-            ).all()
+        # Load all scores in one query (avoid N+1 problem)
+        all_scores = session.query(SynergyScore).filter_by(approved=True).all()
+        scores_by_app = {}
+        for s in all_scores:
+            if s.application_id not in scores_by_app:
+                scores_by_app[s.application_id] = {}
+            scores_by_app[s.application_id][s.block_name] = s.score
 
-            if scores_data:
-                scores = {s.block_name: s.score for s in scores_data}
+        for app in apps:
+            scores = scores_by_app.get(app.id, {})
+
+            if scores:
 
                 # Calculate BVI/THI with custom weights
                 bvi, thi = calculate_bvi_thi(scores, weights_for_calc)
-                rec = get_recommendation(bvi, thi)
+                calculated_rec = get_recommendation(bvi, thi)
+
+                # Use override if set, otherwise use calculated recommendation
+                rec = app.recommendation_override if app.recommendation_override else calculated_rec
+                is_overridden = app.recommendation_override is not None and app.recommendation_override != calculated_rec
 
                 # Get subcategory from database (user-filled) - DO NOT auto-calculate
                 subcategory = app.subcategory if app.subcategory else ''
@@ -3334,6 +3377,8 @@ def page_calculator():
                     'Support Quality': scores.get('Support Quality', ''),
                     'THI': round(thi, 1),
                     'Decision': rec,
+                    'Calc. Decision': calculated_rec,
+                    'Overridden': '⚠️' if is_overridden else '',
                     'Subcategory': subcategory,
                     'Quick Win': app.quick_win if app.quick_win else False,
                     'Priority': priority
@@ -3359,7 +3404,11 @@ def page_calculator():
             st.markdown('<div style="background:#F9FAFB;padding:1rem 1.25rem;border-radius:8px;border:1px solid #E5E7EB;margin-bottom:1rem;"><p style="color:#374151;font-weight:700;font-size:0.85rem;margin:0 0 0.5rem 0;">Subcategory Options by Decision:</p><div style="display:flex;gap:1.5rem;flex-wrap:wrap;"><div><span style="color:#10B981;font-weight:600;font-size:0.8rem;">EVOLVE:</span><span style="color:#6B7280;font-size:0.8rem;"> Migrate, Enhance, Refactor, Upgrade</span></div><div><span style="color:#F59E0B;font-weight:600;font-size:0.8rem;">INVEST:</span><span style="color:#6B7280;font-size:0.8rem;"> Absorb, Modernize</span></div><div><span style="color:#3B82F6;font-weight:600;font-size:0.8rem;">MAINTAIN:</span><span style="color:#6B7280;font-size:0.8rem;"> Internalize, Maintain</span></div><div><span style="color:#EF4444;font-weight:600;font-size:0.8rem;">ELIMINATE:</span><span style="color:#6B7280;font-size:0.8rem;"> Replace, Retire, Absorbed</span></div></div></div>', unsafe_allow_html=True)
 
             st.markdown("""
-            **💡 How to use:** Select a **Subcategory** matching the application's Decision (see reference above). **Quick Win** elevates P2/P3 priorities. **Priority** is calculated automatically. *Changes are saved automatically.*
+            **💡 How to use:**
+            - **Click on any cell in the Decision, Subcategory, or Quick Win columns to edit them** (dropdown appears on click).
+            - Changing **Decision** overrides the calculated recommendation (⚠️ indicator will appear).
+            - Select a **Subcategory** matching the Decision. **Quick Win** elevates P2/P3 priorities.
+            - *All changes are saved automatically.*
             """)
 
             # All subcategory options in a single list (with empty for clearing)
@@ -3367,6 +3416,7 @@ def page_calculator():
 
             column_config = {
                 'app_id': None,
+                'Calc. Decision': None,  # Hidden - used for comparison
                 'Application': st.column_config.TextColumn('Application', disabled=True, width='medium'),
                 'Strategic Fit': st.column_config.NumberColumn('Strategic Fit', disabled=True, width='small'),
                 'Business Efficiency': st.column_config.NumberColumn('Business Efficiency', disabled=True, width='small'),
@@ -3378,12 +3428,20 @@ def page_calculator():
                 'Maintainability': st.column_config.NumberColumn('Maintainability', disabled=True, width='small'),
                 'Support Quality': st.column_config.NumberColumn('Support Quality', disabled=True, width='small'),
                 'THI': st.column_config.NumberColumn('THI', disabled=True, format='%.1f', width='small'),
-                'Decision': st.column_config.TextColumn('Decision', disabled=True, width='small'),
+                'Decision': st.column_config.SelectboxColumn(
+                    '✏️ Decision',
+                    options=['EVOLVE', 'INVEST', 'MAINTAIN', 'ELIMINATE'],
+                    required=True,
+                    width='medium',
+                    help='Click to change - override the calculated recommendation'
+                ),
+                'Overridden': st.column_config.TextColumn('⚠️', disabled=True, width='small', help='Shows ⚠️ if recommendation was manually overridden'),
                 'Subcategory': st.column_config.SelectboxColumn(
-                    'Subcategory',
+                    '✏️ Subcategory',
                     options=all_sub_options,
                     required=False,
-                    width='medium'
+                    width='medium',
+                    help='Click to select action type'
                 ),
                 'Quick Win': st.column_config.CheckboxColumn('Quick Win', width='small'),
                 'Priority': st.column_config.TextColumn('Priority', disabled=True, width='medium')
@@ -3400,13 +3458,33 @@ def page_calculator():
 
             # Detect changes and save to database
             if not edited_df.equals(calc_df):
+                changes_made = False
                 for idx, row in edited_df.iterrows():
                     original_row = calc_df.loc[idx]
                     app_id = row['app_id']
 
-                    if row['Subcategory'] != original_row['Subcategory'] or row['Quick Win'] != original_row['Quick Win']:
+                    # Check if Decision, Subcategory, or Quick Win changed
+                    decision_changed = row['Decision'] != original_row['Decision']
+                    subcategory_changed = row['Subcategory'] != original_row['Subcategory']
+                    quickwin_changed = row['Quick Win'] != original_row['Quick Win']
+
+                    if decision_changed or subcategory_changed or quickwin_changed:
                         app = session.query(Application).filter_by(id=app_id).first()
                         if app:
+                            # Handle Decision override
+                            if decision_changed:
+                                new_decision = row['Decision']
+                                calculated_decision = row['Calc. Decision']
+                                # Save override only if different from calculated
+                                if new_decision != calculated_decision:
+                                    app.recommendation_override = new_decision
+                                else:
+                                    # If user changes back to calculated, remove override
+                                    app.recommendation_override = None
+                                # Update the Overridden indicator
+                                edited_df.at[idx, 'Overridden'] = '⚠️' if app.recommendation_override else ''
+                                changes_made = True
+
                             subcategory_val = row['Subcategory'] if row['Subcategory'] else None
                             decision = row['Decision']
 
@@ -3419,6 +3497,7 @@ def page_calculator():
 
                             app.subcategory = subcategory_val
                             app.quick_win = bool(row['Quick Win'])
+                            changes_made = True
 
                             if subcategory_val:
                                 base_priority = PRIORITY_MAP.get(subcategory_val, 'P3 - Routine')
@@ -3433,9 +3512,10 @@ def page_calculator():
 
                             edited_df.at[idx, 'Priority'] = new_priority
 
-                session.commit()
-                st.success("Changes saved successfully!")
-                st.rerun()
+                if changes_made:
+                    session.commit()
+                    st.success("Changes saved successfully!")
+                    st.rerun()
 
             # Export buttons
             st.markdown("---")

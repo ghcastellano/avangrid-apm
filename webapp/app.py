@@ -2667,8 +2667,13 @@ def page_analyses():
                     for idx, (_, row) in enumerate(df_rec.iterrows()):
                         text_pos = pos_lookup.get(row['name'], 'top right')
                         is_overridden = row.get('is_overridden', False)
-                        base_name = row['name'] if len(row['name']) <= 22 else row['name'][:19] + '...'
-                        display_name = base_name + ' ⚠️' if is_overridden else base_name
+                        calc_rec_short = row.get('calculated_recommendation', '')[:3] if row.get('calculated_recommendation') else ''
+                        base_name = row['name'] if len(row['name']) <= 18 else row['name'][:15] + '...'
+                        # Show transition for overridden: "AppName (INV→EVO)"
+                        if is_overridden:
+                            display_name = f"{base_name} ({calc_rec_short}→{rec[:3]})"
+                        else:
+                            display_name = base_name
 
                         # Star marker for overridden apps, circle for normal
                         marker_symbol = 'star' if is_overridden else 'circle'
@@ -2677,9 +2682,12 @@ def page_analyses():
                         marker_line_width = 2 if is_overridden else 1.5
                         text_color = '#B45309' if is_overridden else '#444444'  # Orange-brown for overridden
 
+                        calc_rec = row.get('calculated_recommendation', 'N/A')
                         hover_text = f'<b>{row["name"]}</b><br>THI: {row["thi"]:.1f}<br>BVI: {row["bvi"]:.1f}'
                         if is_overridden:
-                            hover_text += f'<br><b style="color:orange">⚠️ Recommendation Override</b><br>Calculated: {row.get("calculated_recommendation", "N/A")}'
+                            hover_text += f'<br><br><b>⚠️ MANUAL OVERRIDE</b>'
+                            hover_text += f'<br>Calculated: <b>{calc_rec}</b>'
+                            hover_text += f'<br>Overridden to: <b>{rec}</b>'
                         hover_text += '<extra></extra>'
 
                         fig.add_trace(go.Scatter(

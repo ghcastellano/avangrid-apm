@@ -515,12 +515,19 @@ def build_dashboard_sheet(wb, apps_data):
     # Compute optimal label positions (greedy, no-collision)
     positions = _compute_matplotlib_label_positions(apps_data)
 
-    # Draw labels with thin leader lines - add ⚠️ suffix for overridden apps
+    # Draw labels with thin leader lines - show override details for overridden apps
     for i, app in enumerate(apps_data):
         dx, dy, ha, va = positions[i]
         is_overridden = app.get('is_overridden', False)
-        label_text = app['name'] + ' ⚠️' if is_overridden else app['name']
-        label_color = '#B45309' if is_overridden else '#333333'  # Orange-brown for overridden
+        if is_overridden:
+            calc_rec = app.get('calculated_recommendation', '')
+            new_rec = app.get('recommendation', '')
+            # Show: "AppName (CALC→NEW)"
+            label_text = f"{app['name']} ({calc_rec}→{new_rec})"
+            label_color = '#B45309'  # Orange-brown for overridden
+        else:
+            label_text = app['name']
+            label_color = '#333333'
         ax.annotate(
             label_text,
             xy=(app['thi'], app['bvi']),
